@@ -1,311 +1,417 @@
+import heapq
+from datetime import datetime, date
+from collections import deque
+
 from inventory_item import InventoryItem
 from product import Product
 from category import Category
-import heapq # Thư viện chuẩn của Python cho cấu trúc dữ liệu Heap (Min-Heap)
-from datetime import datetime, date # Thêm thư viện xử lý thời gian
-from collections import deque # Thêm thư viện deque nếu cần dùng cho hàng đợi (Queue) trong tương lai
+from warehouse import Warehouse
 
-"""==================================================================================
-Dịch vụ (Service Layer) - Lớp trung gian giữa giao diện người dùng và cơ sở dữ liệu.
-- Chứa các phương thức để thực hiện các chức năng chính của hệ thống.
-- Sử dụng các cấu trúc dữ liệu (DSA) như Hash Map (Dictionary) để lưu trữ dữ liệu trong RAM, giúp tăng tốc độ truy xuất và xử lý.
-=================================================================================="""
-
-#====================================================================
-#Cây tiền tố Trie cho tìm kiếm sản phẩm theo tên
-#====================================================================
-
+# ==========================================
+# 1. TRIE — Auto-complete theo ID (product_id, batch_id)
+# ==========================================
 class TrieNode:
     def __init__(self):
         self.children = {}
-        self.is_end_of_word = False
-        # Lưu danh sách ID sản phẩm. 
-        # (Dùng list vì có thể có nhiều sản phẩm trùng tên nhưng khác mã)
-        self.product_ids = [] 
+        self.is_end = False
 
-class ProductTrie:
+class Trie:
     def __init__(self):
         self.root = TrieNode()
 
-    def insert(self, name, product_id):
-        """Thêm tên sản phẩm vào cây (O(L))"""
+    def insert(self, word):
         node = self.root
-        name = name.lower() # Chuyển về chữ thường để tìm kiếm không phân biệt hoa thường
-        for char in name:
+        for char in str(word):
             if char not in node.children:
                 node.children[char] = TrieNode()
             node = node.children[char]
-        
+        node.is_end = True
+
+    def get_suggestions(self, prefix):
+        """Lấy các từ bắt đầu bằng prefix — O(L + V)"""
+        node = self.root
+        for char in str(prefix):
+            if char not in node.children:
+                return []
+            node = node.children[char]
+        results = []
+        self._dfs(node, str(prefix), results)
+        return results
+
+    def _dfs(self, node, current_word, results):
+        if node.is_end:
+            results.append(current_word)
+        for char, child_node in node.children.items():
+            self._dfs(child_node, current_word + char, results)
+
+
+# ==========================================
+# 2. ProductTrie — Tìm kiếm theo TÊN sản phẩm
+# ==========================================
+class ProductTrieNode:
+    def __init__(self):
+        self.children = {}
+        self.is_end_of_word = False
+        self.product_ids = []
+
+class ProductTrie:
+    def __init__(self):
+        self.root = ProductTrieNode()
+
+    def insert(self, name, product_id):
+        """Thêm tên sản phẩm vào cây — O(L)"""
+        node = self.root
+        for char in name.lower():
+            if char not in node.children:
+                node.children[char] = ProductTrieNode()
+            node = node.children[char]
         node.is_end_of_word = True
         if product_id not in node.product_ids:
             node.product_ids.append(product_id)
 
     def _dfs(self, node, results):
-        """Thuật toán Duyệt theo chiều sâu (DFS) để gom tất cả ID sản phẩm nhánh dưới"""
+        """DFS gom tất cả product_id bên dưới node"""
         if node.is_end_of_word:
             results.extend(node.product_ids)
-        
-        for child_node in node.children.values():
-            self._dfs(child_node, results)
+        for child in node.children.values():
+            self._dfs(child, results)
 
     def search_prefix(self, prefix):
-        """Tìm kiếm các sản phẩm bắt đầu bằng tiền tố (O(L) + DFS)"""
+        """Tìm các sản phẩm có tên bắt đầu bằng prefix — O(L + DFS)"""
         node = self.root
-        prefix = prefix.lower()
-        
-        # Bước 1: Đi theo tiền tố
-        for char in prefix:
+        for char in prefix.lower():
             if char not in node.children:
-                return [] # Không có sản phẩm nào khớp
+                return []
             node = node.children[char]
-            
-        # Bước 2: Từ Node hiện tại, dùng DFS gom toàn bộ kết quả bên dưới
         results = []
         self._dfs(node, results)
         return results
 
-#====================================================================
-# Lớp Service chính của hệ thống
-#====================================================================
+
+# ==========================================
+# 3. KMP Search — Tìm kiếm chuỗi con
+# ==========================================
+def compute_lps(pattern):
+    lps = [0] * len(pattern)
+    length = 0
+    i = 1
+    while i < len(pattern):
+        if pattern[i] == pattern[length]:
+            length += 1
+            lps[i] = length
+            i += 1
+        else:
+            if length != 0:
+                length = lps[length - 1]
+            else:
+                lps[i] = 0
+                i += 1
+    return lps
+
+def kmp_search(text, pattern):
+    if not pattern:
+        return True
+    text, pattern = str(text).lower(), str(pattern).lower()
+    lps = compute_lps(pattern)
+    i = j = 0
+    while i < len(text):
+        if pattern[j] == text[i]:
+            i += 1
+            j += 1
+        if j == len(pattern):
+            return True
+        elif i < len(text) and pattern[j] != text[i]:
+            if j != 0:
+                j = lps[j - 1]
+            else:
+                i += 1
+    return False
+
+
+# ==========================================
+# 4. BST — Range search theo số lượng tồn kho
+# ==========================================
+class BSTNode:
+    def __init__(self, key, item):
+        self.key = key
+        self.items = [item]
+        self.left = self.right = None
+
+class InventoryBST:
+    def __init__(self):
+        self.root = None
+
+    def insert(self, key, item):
+        if self.root is None:
+            self.root = BSTNode(key, item)
+        else:
+            self._insert(self.root, key, item)
+
+    def _insert(self, node, key, item):
+        if key == node.key:
+            node.items.append(item)
+        elif key < node.key:
+            if node.left is None:
+                node.left = BSTNode(key, item)
+            else:
+                self._insert(node.left, key, item)
+        else:
+            if node.right is None:
+                node.right = BSTNode(key, item)
+            else:
+                self._insert(node.right, key, item)
+
+    def range_search(self, min_val, max_val):
+        """Tìm tất cả lô hàng có quantity trong [min_val, max_val]"""
+        results = []
+        self._search(self.root, min_val, max_val, results)
+        return results
+
+    def _search(self, node, min_val, max_val, results):
+        if not node:
+            return
+        if min_val <= node.key <= max_val:
+            results.extend(node.items)
+        if min_val < node.key:
+            self._search(node.left, min_val, max_val, results)
+        if node.key < max_val:
+            self._search(node.right, min_val, max_val, results)
+
+
+# ==========================================
+# 5. SERVICE — Lớp nghiệp vụ chính
+# ==========================================
 class Service:
     def __init__(self):
-        """
-        Khởi tạo các cấu trúc dữ liệu (DSA) để lưu trữ trong RAM.
-        Sử dụng Hash Map (Dictionary) giúp truy xuất dữ liệu theo ID với độ phức tạp O(1).
-        """
-        self.categories_map = {}  # Key: id_danh_mục, Value: Đối tượng Category
-        self.products_map = {}    # Key: id_sản_phẩm, Value: Đối tượng Product
-        self.inventory_map = {}   # Key: id_bản_ghi_kho, Value: Đối tượng InventoryItem
-        # Thêm Map mới: Đóng vai trò là Secondary Index (Chỉ mục phụ)
-        # Key: (product_id, batch_id, mfg_date, exp_date, warehouse_id) -> Value: InventoryItem
-        self.inventory_composite_map = {}
-		# THÊM MỚI: Khởi tạo Trie
-        self.product_trie = ProductTrie()
-        # THÊM MỚI: Hàng đợi (Queue) giới hạn 5 phần tử cho lịch sử xem
+        # --- Hash Maps (O(1) lookup) ---
+        self.categories_map = {}
+        self.products_map = {}
+        self.inventory_map = {}
+        self.inventory_composite_map = {}   # Composite key → chống trùng lô hàng
+        self.warehouses_map = {}
+
+        # --- DSA nâng cao ---
+        self.qty_bst = InventoryBST()           # BST range search
+        self.product_id_trie = Trie()           # Autocomplete Product ID
+        self.batch_id_trie = Trie()             # Autocomplete Batch ID
+        self.product_name_trie = ProductTrie()  # Search sản phẩm theo tên
+
+        # --- Deque: Lịch sử 5 sản phẩm vừa xem (LRU Cache đơn giản) ---
         self.recently_viewed = deque(maxlen=5)
 
+        self.settings = {
+            "low_stock_threshold": 15,
+            "expiring_days_threshold": 30
+        }
+
     # =========================================================================
-    # 1. TẢI DỮ LIỆU (LOAD DATA FROM DATABASE TO RAM)
+    # TẢI DỮ LIỆU
     # =========================================================================
-    
     def load_data(self, cursor):
-        """
-        Đọc toàn bộ dữ liệu từ MySQL và nạp vào các Dictionary trong RAM.
-        Đây là kỹ thuật Caching để tăng tốc độ xử lý cho các chức năng tìm kiếm/hiển thị.
-        """
+        """Nạp toàn bộ DB vào RAM — Cache để tăng tốc truy xuất"""
         self.categories_map.clear()
         self.products_map.clear()
         self.inventory_map.clear()
-        self.inventory_composite_map.clear() # Clear map mới
-        self.product_trie = ProductTrie() # Reset Trie mới
+        self.inventory_composite_map.clear()
+        self.warehouses_map.clear()
+        self.qty_bst = InventoryBST()
+        self.product_id_trie = Trie()
+        self.batch_id_trie = Trie()
+        self.product_name_trie = ProductTrie()
 
-        # Load Danh mục (Categories)
         cursor.execute("SELECT * FROM categories")
         for row in cursor.fetchall():
             cat = Category(row[0], row[1])
             self.categories_map[cat.id] = cat
 
-        # Load Sản phẩm (Products)
         cursor.execute("SELECT * FROM products")
         for row in cursor.fetchall():
             prod = Product(*row)
             self.products_map[prod.id] = prod
-            self.product_trie.insert(prod.name, prod.id) # Nạp vào Cây tiền tố
-        
-        # Load Kho hàng (Inventory)
+            self.product_id_trie.insert(prod.id)
+            self.product_name_trie.insert(prod.name, prod.id)
+
         cursor.execute("SELECT * FROM inventory")
         for row in cursor.fetchall():
             item = InventoryItem(*row)
             self.inventory_map[item.id] = item
-            # Khởi tạo Composite Key dạng Tuple. 
-            # Lưu ý: Ép kiểu mfg_date và exp_date về string để so sánh nhất quán
-            comp_key = (item.product_id, item.batch_id, str(item.mfg_date), str(item.exp_date), item.warehouse_id)
+            comp_key = (item.product_id, item.batch_id,
+                        str(item.mfg_date), str(item.exp_date), item.warehouse_id)
             self.inventory_composite_map[comp_key] = item
-            
-			
-    # =========================================================================
-    # 2. QUẢN LÝ DANH MỤC (CATEGORY MANAGEMENT)
-    # =========================================================================
+            self.qty_bst.insert(item.quantity, item)
+            self.batch_id_trie.insert(item.batch_id)
 
+        try:
+            cursor.execute("SELECT * FROM warehouses")
+            for row in cursor.fetchall():
+                wh = Warehouse(row[0], row[1], row[2])
+                self.warehouses_map[wh.id] = wh
+        except Exception:
+            pass  # Bảng warehouses chưa tồn tại thì bỏ qua
+
+    # =========================================================================
+    # CATEGORY
+    # =========================================================================
     def add_category(self, id, name, cursor, conn):
-        """Thêm danh mục mới vào DB và cập nhật vào Hash Map RAM"""
+        """Thêm danh mục mới — kiểm tra trùng ID bằng Hash Map O(1)"""
         if id in self.categories_map:
-            return False # ID đã tồn tại
-        
+            return False
         cursor.execute("INSERT INTO categories (id, name) VALUES (%s, %s)", (id, name))
         conn.commit()
-        
-        # Cập nhật RAM (O(1))
         self.categories_map[id] = Category(id, name)
         return True
 
     def show_categories(self):
-        """Trả về danh sách tất cả danh mục từ RAM (O(n))"""
         return list(self.categories_map.values())
 
     # =========================================================================
-    # 3. QUẢN LÝ SẢN PHẨM (PRODUCT MANAGEMENT)
+    # PRODUCT
     # =========================================================================
-
     def check_product_exist(self, product_id):
-        """Kiểm tra sản phẩm tồn tại trong RAM (O(1))"""
+        """Kiểm tra sản phẩm tồn tại — O(1)"""
         return self.products_map.get(product_id, None)
 
-    def add_product(self, id, name, category_id, price, status, cursor, conn):
-        """Thêm sản phẩm mới kèm theo kiểm tra tính hợp lệ của Danh mục"""
-        # Kiểm tra ID sản phẩm trùng
-        if self.check_product_exist(id):
+    def add_product(self, prod_id, name, category_id, price, status, cursor, conn):
+        """Thêm sản phẩm mới + cập nhật Trie"""
+        if prod_id in self.products_map:
             return False
-        
-        # DSA Check: Kiểm tra danh mục có tồn tại trong RAM không (O(1))
-        # Đây là quy tắc ràng buộc dữ liệu (Data Integrity)
-        if category_id not in self.categories_map:
-            return False
-
-		# Lưu vào Database
-        cursor.execute("INSERT INTO products (id, name, category_id, price, status) VALUES (%s, %s, %s, %s, %s)", 
-                       (id, name, category_id, price, status))
+        cursor.execute(
+            "INSERT INTO products (id, name, category_id, price, status) VALUES (%s, %s, %s, %s, %s)",
+            (prod_id, name, category_id, price, status)
+        )
         conn.commit()
-        
-        # Cập nhật RAM và Trie
-        product = Product(id, name, category_id, price, status)
-        self.products_map[id] = product
-        self.product_trie.insert(name, id) # Cập nhật vào cây ngay lập tức
+        new_prod = Product(prod_id, name, category_id, price, status)
+        self.products_map[prod_id] = new_prod
+        self.product_id_trie.insert(prod_id)
+        self.product_name_trie.insert(name, prod_id)
         return True
 
     def find_product_by_id(self, id):
-        """Tìm nhanh sản phẩm theo ID (O(1))"""
+        """Tìm theo ID — O(1) + ghi lịch sử xem (Deque / LRU)"""
         product = self.products_map.get(id, None)
         if product:
-            # Thuật toán LRU Cache cơ bản: 
-            # Nếu sản phẩm đã có trong lịch sử, xóa nó ở vị trí cũ...
             if id in self.recently_viewed:
                 self.recently_viewed.remove(id)
-            # ...và đẩy nó lên cuối hàng đợi (tức là mới nhất)
             self.recently_viewed.append(id)
         return product
 
     def show_products(self):
-        """Lấy toàn bộ danh sách sản phẩm từ RAM"""
         return list(self.products_map.values())
 
-    # =========================================================================
-    # 4. QUẢN LÝ KHO HÀNG (INVENTORY MANAGEMENT)
-    # =========================================================================
+    def search_products_by_name(self, prefix):
+        """Tìm kiếm theo tên bằng ProductTrie — O(L + DFS)"""
+        if not prefix.strip():
+            return []
+        ids = self.product_name_trie.search_prefix(prefix)
+        return [self.products_map[pid] for pid in ids if pid in self.products_map]
 
+    def get_recently_viewed_products(self):
+        """Lấy lịch sử 5 sản phẩm vừa xem — Deque"""
+        return [self.products_map.get(pid) for pid in reversed(self.recently_viewed)]
+
+    # =========================================================================
+    # INVENTORY
+    # =========================================================================
     def check_item_exist(self, product_id, batch_id, mfg_date, exp_date, warehouse_id):
-        """
-        [CẬP NHẬT DSA]: Tìm kiếm O(1) bằng cách sử dụng Composite Key.
-        Thay vì dùng vòng lặp O(n) như trước.
-        """
+        """Kiểm tra lô hàng đã tồn tại bằng Composite Key — O(1)"""
         comp_key = (product_id, batch_id, str(mfg_date), str(exp_date), warehouse_id)
         return self.inventory_composite_map.get(comp_key, None)
 
     def add_inventory_item(self, product_id, quantity, batch_id, mfg_date, exp_date, warehouse_id, cursor, conn):
         existing = self.check_item_exist(product_id, batch_id, mfg_date, exp_date, warehouse_id)
-        
         if existing:
-            # 1. Cập nhật số lượng (Object reference sẽ tự động cập nhật ở cả 2 Map)
-            existing.update_quantity(quantity)
-            cursor.execute("UPDATE inventory SET quantity = %s WHERE id = %s", (existing.quantity, existing.id))
+            existing.quantity += int(quantity)
+            cursor.execute("UPDATE inventory SET quantity = %s WHERE id = %s",
+                           (existing.quantity, existing.id))
             conn.commit()
             return True
         else:
-            # 2. Thêm mới
-            cursor.execute("INSERT INTO inventory (product_id, batch_id, mfg_date, exp_date, quantity, warehouse_id) "
-                           "VALUES (%s, %s, %s, %s, %s, %s)", 
-                           (product_id, batch_id, mfg_date, exp_date, quantity, warehouse_id))
+            cursor.execute(
+                "INSERT INTO inventory (product_id, batch_id, mfg_date, exp_date, quantity, warehouse_id) "
+                "VALUES (%s, %s, %s, %s, %s, %s)",
+                (product_id, batch_id, mfg_date, exp_date, quantity, warehouse_id)
+            )
             conn.commit()
-            
             item_id = cursor.lastrowid
-            new_item = InventoryItem(item_id, product_id, batch_id, mfg_date, exp_date, quantity, warehouse_id)
-            
-            # Cập nhật vào CẢ 2 HASH MAPS
+            new_item = InventoryItem(item_id, product_id, batch_id, mfg_date,
+                                     exp_date, int(quantity), warehouse_id)
             self.inventory_map[item_id] = new_item
             comp_key = (product_id, batch_id, str(mfg_date), str(exp_date), warehouse_id)
             self.inventory_composite_map[comp_key] = new_item
-            
+            self.qty_bst.insert(int(quantity), new_item)
+            self.batch_id_trie.insert(batch_id)
             return True
 
     def find_inventory_by_product_id(self, product_id):
-        """Lọc danh sách các lô hàng của một sản phẩm cụ thể (O(n))"""
         return [item for item in self.inventory_map.values() if item.product_id == product_id]
-            
+
     def show_inventory(self):
-        """Hiển thị tất cả các lô hàng có trong kho"""
         return list(self.inventory_map.values())
 
     # =========================================================================
-    # 5. CÁC GIẢI THUẬT SẮP XẾP VÀ TÌM KIẾM NÂNG CAO
+    # WAREHOUSE
+    # =========================================================================
+    def add_warehouse(self, wh_id, name, space, cursor, conn):
+        if wh_id in self.warehouses_map:
+            return False
+        cursor.execute("INSERT INTO warehouses (id, name, space) VALUES (%s, %s, %s)",
+                       (wh_id, name, space))
+        conn.commit()
+        self.warehouses_map[wh_id] = Warehouse(wh_id, name, space)
+        return True
+
+    def get_warehouse_summary(self):
+        """Thống kê lô hàng & tổng số lượng theo từng kho — O(n) Hash Map"""
+        summary = {}
+        for inv in self.inventory_map.values():
+            wh_id = inv.warehouse_id or "Unknown"
+            if wh_id not in summary:
+                summary[wh_id] = {"batches": 0, "total_qty": 0}
+            summary[wh_id]["batches"] += 1
+            summary[wh_id]["total_qty"] += inv.quantity
+        return summary
+
+    # =========================================================================
+    # ALERTS — Heap-based
     # =========================================================================
     def get_low_stock_warnings(self, threshold=50):
-        """
-        Thuật toán cảnh báo sắp hết hàng sử dụng Hash Map và Min-Heap.
-        - threshold: Ngưỡng số lượng tồn kho tối thiểu để báo động (Mặc định: 50)
-        """
-        # Bước 1: Tính tổng tồn kho cho từng sản phẩm (Gom nhóm O(n))
+        """Cảnh báo sắp hết hàng — Min-Heap O(n log k)"""
         stock_summary = {}
         for item in self.inventory_map.values():
             stock_summary[item.product_id] = stock_summary.get(item.product_id, 0) + item.quantity
-
-        # Bổ sung các sản phẩm chưa từng có trong kho (số lượng = 0)
         for prod_id in self.products_map.keys():
             if prod_id not in stock_summary:
                 stock_summary[prod_id] = 0
 
-        # Bước 2: Sử dụng Min-Heap để lọc và sắp xếp
         min_heap = []
         for prod_id, total_qty in stock_summary.items():
             if total_qty <= threshold:
-                # Đẩy vào Min-Heap dạng Tuple: (Tiêu_chí_sắp_xếp, Giá_trị_đi_kèm)
-                # Ở đây là (total_qty, prod_id)
                 heapq.heappush(min_heap, (total_qty, prod_id))
 
-        # Bước 3: Rút trích kết quả từ Heap (Từ ít nhất đến nhiều nhất)
         warnings = []
         while min_heap:
-            qty, prod_id = heapq.heappop(min_heap) # Lấy phần tử nhỏ nhất ra
+            qty, prod_id = heapq.heappop(min_heap)
             product = self.products_map[prod_id]
-            warnings.append({
-                "id": product.id,
-                "name": product.name,
-                "total_quantity": qty
-            })
-
-        return warnings 
+            warnings.append({"id": product.id, "name": product.name, "total_quantity": qty})
+        return warnings
 
     def get_expiring_soon_warnings(self, days_threshold=30):
-        """
-        Lọc và sắp xếp các lô hàng sắp hết hạn sử dụng.
-        - days_threshold: Ngưỡng số ngày báo động (Mặc định: 30 ngày)
-        """
+        """Cảnh báo sắp hết hạn — Min-Heap O(n log k)"""
         today = date.today()
         min_heap = []
-
-        # Bước 1: Quét qua toàn bộ kho hàng (O(n))
         for item in self.inventory_map.values():
-            # Xử lý an toàn: Tùy thư viện kết nối, exp_date có thể là chuỗi hoặc đối tượng date
             if isinstance(item.exp_date, str):
-                exp_date_obj = datetime.strptime(item.exp_date, "%Y-%m-%d").date()
+                exp_obj = datetime.strptime(item.exp_date, "%Y-%m-%d").date()
             else:
-                exp_date_obj = item.exp_date
+                exp_obj = item.exp_date
+            days_left = (exp_obj - today).days
+            if days_left <= days_threshold:
+                heapq.heappush(min_heap, (days_left, item.id, item))
 
-            # Tính số ngày còn lại
-            days_remaining = (exp_date_obj - today).days
-
-            # Lọc các sản phẩm <= ngưỡng báo động (bao gồm cả số âm là ĐÃ HẾT HẠN)
-            if days_remaining <= days_threshold:
-                # [Mẹo DSA Python]: Push vào Heap dạng Tuple (days_remaining, item.id, item)
-                # item.id đóng vai trò "tie-breaker". Nếu 2 lô hàng có cùng ngày hết hạn,
-                # Heap sẽ so sánh đến ID (là số nguyên duy nhất) để tránh lỗi crash chương trình.
-                heapq.heappush(min_heap, (days_remaining, item.id, item))
-
-        # Bước 2: Rút trích kết quả từ Heap ra danh sách (O(k log k))
         warnings = []
         while min_heap:
             days_left, _, item = heapq.heappop(min_heap)
             product = self.products_map.get(item.product_id)
-            
             warnings.append({
                 "inv_id": item.id,
                 "batch_id": item.batch_id,
@@ -315,27 +421,173 @@ class Service:
                 "quantity": item.quantity,
                 "warehouse_id": item.warehouse_id
             })
-
         return warnings
-    
 
-    # ---	TÌM KIẾM SẢN PHẨM THEO TÊN (AUTO-COMPLETE BẰNG TRIE)  ---
-    def search_products_by_name(self, prefix):
-        """Hàm giao tiếp với UI để lấy thông tin chi tiết các sản phẩm tìm được"""
-        if not prefix.strip():
-            return []
-            
-        product_ids = self.product_trie.search_prefix(prefix)
-        
-        # Map từ ID sang Object Product
-        matched_products = [self.products_map[pid] for pid in product_ids]
-        return matched_products
-    
-    # --- LẤY DANH SÁCH XEM GẦN ĐÂY (QUEUE / DEQUE)  ---
-    def get_recently_viewed_products(self):
-        """Trả về danh sách sản phẩm đã xem từ mới nhất -> cũ nhất"""
-        recent_products = []
-        # Duyệt ngược hàng đợi để hiển thị cái mới nhất trước
-        for pid in reversed(self.recently_viewed):
-            recent_products.append(self.products_map.get(pid))
-        return recent_products
+    def get_low_stock_items(self):
+        """Lấy danh sách lô hàng thấp — dùng cho GUI"""
+        threshold = self.settings["low_stock_threshold"]
+        min_heap = []
+        for inv in self.inventory_map.values():
+            if inv.quantity <= threshold:
+                heapq.heappush(min_heap, (inv.quantity, inv.id, inv))
+        return [heapq.heappop(min_heap)[2] for _ in range(len(min_heap))]
+
+    def get_expiring_items(self):
+        """Lấy danh sách lô sắp hết hạn — dùng cho GUI"""
+        threshold = self.settings["expiring_days_threshold"]
+        today = date.today()
+        min_heap = []
+        for inv in self.inventory_map.values():
+            try:
+                exp = (datetime.strptime(str(inv.exp_date), "%Y-%m-%d").date()
+                       if isinstance(inv.exp_date, str) else inv.exp_date)
+                days_left = (exp - today).days
+                if days_left <= threshold:
+                    heapq.heappush(min_heap, (days_left, inv.id, inv))
+            except Exception:
+                pass
+        return [heapq.heappop(min_heap)[2] for _ in range(len(min_heap))]
+
+    # =========================================================================
+    # SEARCH (KMP) & KPI
+    # =========================================================================
+    def search_items(self, keyword, item_type="Product"):
+        """Tìm kiếm bằng KMP Search — O(n * (m + p))"""
+        results = []
+        if item_type == "Product":
+            source = self.products_map.values() if not keyword.strip() else [
+                p for p in self.products_map.values()
+                if kmp_search(p.name, keyword) or kmp_search(str(p.id), keyword)
+            ]
+            return list(source) if not keyword.strip() else source
+        elif item_type == "Inventory":
+            if not keyword.strip():
+                return list(self.inventory_map.values())
+            for inv in self.inventory_map.values():
+                prod_name = getattr(self.products_map.get(inv.product_id), 'name', str(inv.product_id))
+                if kmp_search(prod_name, keyword) or kmp_search(str(inv.batch_id), keyword):
+                    results.append(inv)
+        elif item_type == "Category":
+            if not keyword.strip():
+                return list(self.categories_map.values())
+            for c in self.categories_map.values():
+                if kmp_search(c.name, keyword) or kmp_search(str(c.id), keyword):
+                    results.append(c)
+        elif item_type == "Warehouse":
+            if not keyword.strip():
+                return list(self.warehouses_map.values())
+            for w in self.warehouses_map.values():
+                if kmp_search(w.name, keyword) or kmp_search(str(w.id), keyword):
+                    results.append(w)
+        return results
+
+    # =========================================================================
+    # REMOVE / RESTORE — Dùng cho Command Pattern (Undo / Redo)
+    # Nguyên tắc: history.py chỉ gọi service, không tự gọi DB trực tiếp
+    # =========================================================================
+
+    # --- INVENTORY ---
+    def remove_inventory_item(self, item_id, cursor, conn):
+        """Xóa lô hàng khỏi DB và cập nhật RAM — dùng cho Undo AddInventory"""
+        cursor.execute("DELETE FROM inventory WHERE id=%s", (item_id,))
+        conn.commit()
+        item = self.inventory_map.pop(item_id, None)
+        if item:
+            comp_key = (item.product_id, item.batch_id,
+                        str(item.mfg_date), str(item.exp_date), item.warehouse_id)
+            self.inventory_composite_map.pop(comp_key, None)
+        return item
+
+    def restore_inventory_item(self, item_id, product_id, batch_id,
+                               mfg_date, exp_date, quantity, warehouse_id, cursor, conn):
+        """Chèn lại lô hàng với ID cũ — dùng cho Redo AddInventory"""
+        cursor.execute(
+            "INSERT INTO inventory (id, product_id, batch_id, mfg_date, exp_date, quantity, warehouse_id) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+            (item_id, product_id, batch_id, mfg_date, exp_date, quantity, warehouse_id)
+        )
+        conn.commit()
+        new_item = InventoryItem(item_id, product_id, batch_id,
+                                  mfg_date, exp_date, quantity, warehouse_id)
+        self.inventory_map[item_id] = new_item
+        comp_key = (product_id, batch_id, str(mfg_date), str(exp_date), warehouse_id)
+        self.inventory_composite_map[comp_key] = new_item
+        self.qty_bst.insert(quantity, new_item)
+
+    def update_inventory_quantity(self, item_id, new_quantity, cursor, conn):
+        """Cập nhật số lượng một lô hàng — dùng cho Undo/Redo UpdateQty"""
+        item = self.inventory_map.get(item_id)
+        if item:
+            item.quantity = new_quantity
+            cursor.execute("UPDATE inventory SET quantity=%s WHERE id=%s",
+                           (new_quantity, item_id))
+            conn.commit()
+            return True
+        return False
+
+    # --- PRODUCT ---
+    def remove_product(self, prod_id, cursor, conn):
+        """Xóa sản phẩm khỏi DB và RAM — dùng cho Undo AddProduct"""
+        cursor.execute("DELETE FROM products WHERE id=%s", (prod_id,))
+        conn.commit()
+        self.products_map.pop(prod_id, None)
+
+    def restore_product(self, prod_id, name, category_id, price, status, cursor, conn):
+        """Chèn lại sản phẩm — dùng cho Redo AddProduct"""
+        cursor.execute(
+            "INSERT INTO products (id, name, category_id, price, status) VALUES (%s,%s,%s,%s,%s)",
+            (prod_id, name, category_id, price, status)
+        )
+        conn.commit()
+        new_prod = Product(prod_id, name, category_id, price, status)
+        self.products_map[prod_id] = new_prod
+        self.product_id_trie.insert(prod_id)
+        self.product_name_trie.insert(name, prod_id)
+
+    # --- CATEGORY ---
+    def remove_category(self, cat_id, cursor, conn):
+        """Xóa danh mục khỏi DB và RAM — dùng cho Undo AddCategory"""
+        cursor.execute("DELETE FROM categories WHERE id=%s", (cat_id,))
+        conn.commit()
+        self.categories_map.pop(cat_id, None)
+
+    def restore_category(self, cat_id, name, cursor, conn):
+        """Chèn lại danh mục — dùng cho Redo AddCategory"""
+        cursor.execute("INSERT INTO categories (id, name) VALUES (%s,%s)", (cat_id, name))
+        conn.commit()
+        self.categories_map[cat_id] = Category(cat_id, name)
+
+    # --- WAREHOUSE ---
+    def remove_warehouse(self, wh_id, cursor, conn):
+        """Xóa kho khỏi DB và RAM — dùng cho Undo AddWarehouse"""
+        cursor.execute("DELETE FROM warehouses WHERE id=%s", (wh_id,))
+        conn.commit()
+        self.warehouses_map.pop(wh_id, None)
+
+    def restore_warehouse(self, wh_id, name, space, cursor, conn):
+        """Chèn lại kho — dùng cho Redo AddWarehouse"""
+        cursor.execute("INSERT INTO warehouses (id, name, space) VALUES (%s,%s,%s)",
+                       (wh_id, name, space))
+        conn.commit()
+        self.warehouses_map[wh_id] = Warehouse(wh_id, name, space)
+
+    def get_kpi_stats(self):
+        total_products = len(self.products_map)
+        total_warehouses = (len(self.warehouses_map) if self.warehouses_map
+                            else len(set(inv.warehouse_id for inv in self.inventory_map.values() if inv.warehouse_id)))
+        total_value = 0
+        for inv in self.inventory_map.values():
+            prod = self.products_map.get(inv.product_id)
+            if prod:
+                try:
+                    total_value += inv.quantity * float(prod.price)
+                except ValueError:
+                    pass
+        value_str = f"${total_value/1000:.1f}k" if total_value >= 1000 else f"${total_value:.2f}"
+        return {
+            "Total Products": {"value": str(total_products), "trend": "↗ +12%"},
+            "Warehouses": {"value": str(max(total_warehouses, 1)), "trend": "↗ +1%"},
+            "Inventory Value": {"value": value_str, "trend": "↗ +8%"},
+            "Low Stock Count": str(len(self.get_low_stock_items())),
+            "Expiring Count": str(len(self.get_expiring_items()))
+        }
