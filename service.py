@@ -6,6 +6,7 @@ from inventory_item import InventoryItem
 from product import Product
 from category import Category
 from warehouse import Warehouse
+from store import Store
 
 # ==========================================
 # 1. TRIE — Auto-complete theo ID (product_id, batch_id)
@@ -189,6 +190,7 @@ class Service:
         self.inventory_map = {}
         self.inventory_composite_map = {}   # Composite key → chống trùng lô hàng
         self.warehouses_map = {}
+        self.stores_map = {}
 
         # --- DSA nâng cao ---
         self.qty_bst = InventoryBST()           # BST range search
@@ -214,6 +216,7 @@ class Service:
         self.inventory_map.clear()
         self.inventory_composite_map.clear()
         self.warehouses_map.clear()
+        self.stores_map.clear()
         self.qty_bst = InventoryBST()
         self.product_id_trie = Trie()
         self.batch_id_trie = Trie()
@@ -236,7 +239,7 @@ class Service:
             item = InventoryItem(*row)
             self.inventory_map[item.id] = item
             comp_key = (item.product_id, item.batch_id,
-                        str(item.mfg_date), str(item.exp_date), item.warehouse_id)
+                        str(item.mfg_date), str(item.exp_date), item.warehouse_id, item.store_id)
             self.inventory_composite_map[comp_key] = item
             self.qty_bst.insert(item.quantity, item)
             self.batch_id_trie.insert(item.batch_id)
@@ -249,9 +252,31 @@ class Service:
         except Exception:
             pass  # Bảng warehouses chưa tồn tại thì bỏ qua
 
+        try:
+            cursor.execute("SELECT * FROM stores")
+            for row in cursor.fetchall():
+                st = Store(row[0], row[1], row[2])
+                self.stores_map[st.id] = st
+        except Exception:
+            pass
+
+    def _get_next_id(self, item_dict, prefix):
+        max_num = 0
+        for item_id in item_dict.keys():
+            if item_id.startswith(prefix):
+                try:
+                    num = int(item_id[len(prefix):])
+                    if num > max_num: max_num = num
+                except ValueError:
+                    pass
+        return f"{prefix}{max_num + 1:02d}"
+
     # =========================================================================
     # CATEGORY
     # =========================================================================
+    def generate_category_id(self):
+        return self._get_next_id(self.categories_map, "C")
+
     def add_category(self, id, name, cursor, conn):
         """Thêm danh mục mới — kiểm tra trùng ID bằng Hash Map O(1)"""
         if id in self.categories_map:
@@ -312,35 +337,35 @@ class Service:
     # =========================================================================
     # INVENTORY
     # =========================================================================
-    def check_item_exist(self, product_id, batch_id, mfg_date, exp_date, warehouse_id):
+    def check_item_exist(self, product_id, batch_id, mfg_date, exp_date, warehouse_id, store_id=None):
         """Kiểm tra lô hàng đã tồn tại bằng Composite Key — O(1)"""
-        comp_key = (product_id, batch_id, str(mfg_date), str(exp_date), warehouse_id)
+        comp_key = (product_id, batch_id, str(mfg_date), str(exp_date), warehouse_id, store_id)
         return self.inventory_composite_map.get(comp_key, None)
 
-    def add_inventory_item(self, product_id, quantity, batch_id, mfg_date, exp_date, warehouse_id, cursor, conn):
-        existing = self.check_item_exist(product_id, batch_id, mfg_date, exp_date, warehouse_id)
+    def add_inventory_item(self, product_id, quantity, batch_id, mfg_date, exp_date, warehouse_id, cursor, conn, store_id=None):
+        existing = self.check_item_exist(product_id, batch_id, mfg_date, exp_date, warehouse_id, store_id)
         if existing:
             existing.quantity += int(quantity)
             cursor.execute("UPDATE inventory SET quantity = %s WHERE id = %s",
                            (existing.quantity, existing.id))
             conn.commit()
-            return True
+            return True, existing.id
         else:
             cursor.execute(
-                "INSERT INTO inventory (product_id, batch_id, mfg_date, exp_date, quantity, warehouse_id) "
-                "VALUES (%s, %s, %s, %s, %s, %s)",
-                (product_id, batch_id, mfg_date, exp_date, quantity, warehouse_id)
+                "INSERT INTO inventory (product_id, batch_id, mfg_date, exp_date, quantity, warehouse_id, store_id) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (product_id, batch_id, mfg_date, exp_date, quantity, warehouse_id, store_id)
             )
             conn.commit()
             item_id = cursor.lastrowid
             new_item = InventoryItem(item_id, product_id, batch_id, mfg_date,
-                                     exp_date, int(quantity), warehouse_id)
+                                     exp_date, int(quantity), warehouse_id, store_id)
             self.inventory_map[item_id] = new_item
-            comp_key = (product_id, batch_id, str(mfg_date), str(exp_date), warehouse_id)
+            comp_key = (product_id, batch_id, str(mfg_date), str(exp_date), warehouse_id, store_id)
             self.inventory_composite_map[comp_key] = new_item
             self.qty_bst.insert(int(quantity), new_item)
             self.batch_id_trie.insert(batch_id)
-            return True
+            return True, item_id
 
     def find_inventory_by_product_id(self, product_id):
         return [item for item in self.inventory_map.values() if item.product_id == product_id]
@@ -351,6 +376,9 @@ class Service:
     # =========================================================================
     # WAREHOUSE
     # =========================================================================
+    def generate_warehouse_id(self):
+        return self._get_next_id(self.warehouses_map, "WH-")
+
     def add_warehouse(self, wh_id, name, space, cursor, conn):
         if wh_id in self.warehouses_map:
             return False
@@ -364,12 +392,63 @@ class Service:
         """Thống kê lô hàng & tổng số lượng theo từng kho — O(n) Hash Map"""
         summary = {}
         for inv in self.inventory_map.values():
-            wh_id = inv.warehouse_id or "Unknown"
-            if wh_id not in summary:
-                summary[wh_id] = {"batches": 0, "total_qty": 0}
-            summary[wh_id]["batches"] += 1
-            summary[wh_id]["total_qty"] += inv.quantity
+            if inv.warehouse_id:
+                wh_id = inv.warehouse_id
+                if wh_id not in summary:
+                    summary[wh_id] = {"batches": 0, "total_qty": 0}
+                summary[wh_id]["batches"] += 1
+                summary[wh_id]["total_qty"] += inv.quantity
         return summary
+
+    # =========================================================================
+    # STORE
+    # =========================================================================
+    def generate_store_id(self):
+        return self._get_next_id(self.stores_map, "ST-")
+
+    def add_store(self, store_id, name, location, cursor, conn):
+        if store_id in self.stores_map:
+            return False
+        cursor.execute("INSERT INTO stores (id, name, location) VALUES (%s, %s, %s)",
+                       (store_id, name, location))
+        conn.commit()
+        self.stores_map[store_id] = Store(store_id, name, location)
+        return True
+
+    def get_store_summary(self):
+        summary = {}
+        for inv in self.inventory_map.values():
+            if inv.store_id:
+                st_id = inv.store_id
+                if st_id not in summary:
+                    summary[st_id] = {"batches": 0, "total_qty": 0}
+                summary[st_id]["batches"] += 1
+                summary[st_id]["total_qty"] += inv.quantity
+        return summary
+
+    def transfer_inventory(self, item_id, target_store_id, transfer_qty, cursor, conn):
+        """Chuyển số lượng từ lô hàng trong Warehouse sang Store"""
+        source_item = self.inventory_map.get(item_id)
+        if not source_item or source_item.quantity < transfer_qty:
+            return False, "Not enough quantity"
+        
+        # 1. Trừ số lượng kho (nếu = 0 thì xóa trong service, DB thì delete)
+        source_item.quantity -= transfer_qty
+        if source_item.quantity > 0:
+            cursor.execute("UPDATE inventory SET quantity = %s WHERE id = %s", (source_item.quantity, item_id))
+        else:
+            cursor.execute("DELETE FROM inventory WHERE id = %s", (item_id,))
+            self.inventory_map.pop(item_id)
+            comp_key = (source_item.product_id, source_item.batch_id, str(source_item.mfg_date), str(source_item.exp_date), source_item.warehouse_id, source_item.store_id)
+            self.inventory_composite_map.pop(comp_key, None)
+        conn.commit()
+
+        # 2. Thêm vào cửa hàng
+        _, target_item_id = self.add_inventory_item(
+            source_item.product_id, transfer_qty, source_item.batch_id, 
+            source_item.mfg_date, source_item.exp_date, None, cursor, conn, store_id=target_store_id
+        )
+        return True, target_item_id
 
     # =========================================================================
     # ALERTS — Heap-based
@@ -479,6 +558,12 @@ class Service:
             for w in self.warehouses_map.values():
                 if kmp_search(w.name, keyword) or kmp_search(str(w.id), keyword):
                     results.append(w)
+        elif item_type == "Store":
+            if not keyword.strip():
+                return list(self.stores_map.values())
+            for s in self.stores_map.values():
+                if kmp_search(s.name, keyword) or kmp_search(str(s.id), keyword):
+                    results.append(s)
         return results
 
     # =========================================================================
@@ -494,23 +579,23 @@ class Service:
         item = self.inventory_map.pop(item_id, None)
         if item:
             comp_key = (item.product_id, item.batch_id,
-                        str(item.mfg_date), str(item.exp_date), item.warehouse_id)
+                        str(item.mfg_date), str(item.exp_date), item.warehouse_id, item.store_id)
             self.inventory_composite_map.pop(comp_key, None)
         return item
 
     def restore_inventory_item(self, item_id, product_id, batch_id,
-                               mfg_date, exp_date, quantity, warehouse_id, cursor, conn):
+                               mfg_date, exp_date, quantity, warehouse_id, cursor, conn, store_id=None):
         """Chèn lại lô hàng với ID cũ — dùng cho Redo AddInventory"""
         cursor.execute(
-            "INSERT INTO inventory (id, product_id, batch_id, mfg_date, exp_date, quantity, warehouse_id) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s)",
-            (item_id, product_id, batch_id, mfg_date, exp_date, quantity, warehouse_id)
+            "INSERT INTO inventory (id, product_id, batch_id, mfg_date, exp_date, quantity, warehouse_id, store_id) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+            (item_id, product_id, batch_id, mfg_date, exp_date, quantity, warehouse_id, store_id)
         )
         conn.commit()
         new_item = InventoryItem(item_id, product_id, batch_id,
-                                  mfg_date, exp_date, quantity, warehouse_id)
+                                  mfg_date, exp_date, quantity, warehouse_id, store_id)
         self.inventory_map[item_id] = new_item
-        comp_key = (product_id, batch_id, str(mfg_date), str(exp_date), warehouse_id)
+        comp_key = (product_id, batch_id, str(mfg_date), str(exp_date), warehouse_id, store_id)
         self.inventory_composite_map[comp_key] = new_item
         self.qty_bst.insert(quantity, new_item)
 
@@ -571,10 +656,24 @@ class Service:
         conn.commit()
         self.warehouses_map[wh_id] = Warehouse(wh_id, name, space)
 
+    # --- STORE ---
+    def remove_store(self, store_id, cursor, conn):
+        """Xóa kho khỏi DB và RAM — dùng cho Undo AddStore"""
+        cursor.execute("DELETE FROM stores WHERE id=%s", (store_id,))
+        conn.commit()
+        self.stores_map.pop(store_id, None)
+
+    def restore_store(self, store_id, name, location, cursor, conn):
+        """Chèn lại cửa hàng — dùng cho Redo AddStore"""
+        cursor.execute("INSERT INTO stores (id, name, location) VALUES (%s,%s,%s)",
+                       (store_id, name, location))
+        conn.commit()
+        self.stores_map[store_id] = Store(store_id, name, location)
+
     def get_kpi_stats(self):
         total_products = len(self.products_map)
-        total_warehouses = (len(self.warehouses_map) if self.warehouses_map
-                            else len(set(inv.warehouse_id for inv in self.inventory_map.values() if inv.warehouse_id)))
+        total_warehouses = len(self.warehouses_map)
+        total_stores = len(self.stores_map)
         total_value = 0
         for inv in self.inventory_map.values():
             prod = self.products_map.get(inv.product_id)
@@ -587,6 +686,7 @@ class Service:
         return {
             "Total Products": {"value": str(total_products), "trend": "↗ +12%"},
             "Warehouses": {"value": str(max(total_warehouses, 1)), "trend": "↗ +1%"},
+            "Stores": {"value": str(max(total_stores, 1)), "trend": "↗ +5%"},
             "Inventory Value": {"value": value_str, "trend": "↗ +8%"},
             "Low Stock Count": str(len(self.get_low_stock_items())),
             "Expiring Count": str(len(self.get_expiring_items()))

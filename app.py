@@ -4,7 +4,8 @@ from tkinter import ttk, messagebox
 from tkcalendar import DateEntry # <--- THƯ VIỆN LỊCH
 from service import Service
 from history import (CommandHistory, AddInventoryCommand, UpdateInventoryQtyCommand,
-                      AddProductCommand, AddCategoryCommand, AddWarehouseCommand)
+                      AddProductCommand, AddCategoryCommand, AddWarehouseCommand, 
+                      AddStoreCommand, TransferInventoryCommand)
 from datetime import datetime, date as date_type
 import db_connect
 
@@ -36,6 +37,7 @@ class App(ctk.CTk):
         self.filter_category_id = None
         self.filter_product_id = None
         self.filter_warehouse_id = None
+        self.filter_store_id = None
         # Lọc theo khoảng — Quantity (BST) & Exp Date
         self.range_filter = {"qty_min": None, "qty_max": None,
                              "exp_from": None, "exp_to": None}
@@ -400,7 +402,7 @@ class App(ctk.CTk):
         tab_frame = ctk.CTkFrame(self, fg_color="transparent", height=45)
         tab_frame.pack(fill="x", padx=38, pady=0)
         self.tab_btns = {}
-        tabs = [("🏷️ Category", "Category"), ("📦 Product", "Product"), ("📋 Inventory", "Inventory"), ("🏢 Warehouse", "Warehouse")]
+        tabs = [("🏷️ Category", "Category"), ("📦 Product", "Product"), ("📋 Inventory", "Inventory"), ("🏢 Warehouse", "Warehouse"), ("🏪 Store", "Store")]
         for text, name in tabs:
             btn = ctk.CTkButton(tab_frame, text=text, font=("Inter", 14, "bold"), fg_color="transparent",
                 text_color=PRIMARY_COLOR if name == self.active_tab else TEXT_SUB,
@@ -418,6 +420,7 @@ class App(ctk.CTk):
             self.filter_category_id = None
             self.filter_product_id = None
             self.filter_warehouse_id = None
+            self.filter_store_id = None
             self.range_filter = {"qty_min": None, "qty_max": None,
                                  "exp_from": None, "exp_to": None}
         self.build_main_content()
@@ -436,7 +439,7 @@ class App(ctk.CTk):
         self.search_entry.pack(side="left")
         self.search_entry.bind("<KeyRelease>", lambda e: self.refresh_table())
 
-        active_filter = self.filter_category_id or self.filter_product_id or self.filter_warehouse_id
+        active_filter = self.filter_category_id or self.filter_product_id or self.filter_warehouse_id or self.filter_store_id
         if active_filter:
             msg = f"Đang lọc: {active_filter}"
             ctk.CTkLabel(toolbar, text=msg, text_color="#f97316", font=("Inter", 12, "bold")).pack(side="left", padx=10)
@@ -452,20 +455,32 @@ class App(ctk.CTk):
             self.btn_low.pack(side="left", padx=5)
             self.btn_exp = ctk.CTkButton(filter_frame, text="⏳ Expiring", fg_color="#ffffff", text_color=TEXT_MAIN, border_width=1, width=90, height=35, hover_color="#f3f4f6", command=lambda: self.set_filter("EXPIRING"))
             self.btn_exp.pack(side="left", padx=5)
+            ctk.CTkButton(filter_frame, text="🚚 Transfer", fg_color="#8b5cf6", hover_color="#7c3aed",
+                          font=("Inter", 12, "bold"), height=35,
+                          command=self.open_transfer_dialog).pack(side="left", padx=10)
         elif self.active_tab == "Warehouse":
             ctk.CTkButton(toolbar, text="➕ Add Warehouse", fg_color="#10b981", hover_color="#059669",
                           font=("Inter", 13, "bold"), height=38,
                           command=self.open_add_warehouse_dialog).pack(side="right")
+        elif self.active_tab == "Store":
+            ctk.CTkButton(toolbar, text="➕ Add Store", fg_color="#10b981", hover_color="#059669",
+                          font=("Inter", 13, "bold"), height=38,
+                          command=self.open_add_store_dialog).pack(side="right")
+        elif self.active_tab == "Category":
+            ctk.CTkButton(toolbar, text="➕ Add Category", fg_color="#10b981", hover_color="#059669",
+                          font=("Inter", 13, "bold"), height=38,
+                          command=self.open_add_category_dialog).pack(side="right")
 
         table_container = ctk.CTkFrame(self.content_area, fg_color="transparent")
         table_container.pack(fill="both", expand=True, padx=20, pady=(0, 20))
 
         if self.active_tab == "Inventory":
-            cols = ("Product", "Batch", "Warehouse", "Quantity", "Exp Date", "Status")
-            self.tree = ttk.Treeview(table_container, columns=cols, show="headings")
+            cols = ("ID", "Product", "Batch", "Location", "Quantity", "Exp Date", "Status")
+            self.tree = ttk.Treeview(table_container, columns=cols, show="headings", selectmode="extended")
             for col in cols:
                 self.tree.heading(col, text=col.upper())
-                self.tree.column(col, anchor="center" if col != "Product" else "w")
+                self.tree.column(col, anchor="center" if col not in ("Product", "Location") else "w", width=120 if col == "Location" else 100)
+                if col == "ID": self.tree.column(col, width=50)
             # Heading có thể click để lọc theo khoảng (hiển thị icon khi đang filter)
             qty_on = self.range_filter["qty_min"] is not None or self.range_filter["qty_max"] is not None
             exp_on = self.range_filter["exp_from"] is not None or self.range_filter["exp_to"] is not None
@@ -500,6 +515,15 @@ class App(ctk.CTk):
             self.tree.bind("<Double-1>", self.on_warehouse_double_click)
             self.tree.pack(fill="both", expand=True)
 
+        elif self.active_tab == "Store":
+            cols = ("ID", "Name", "Location", "Total Batches", "Total Qty")
+            self.tree = ttk.Treeview(table_container, columns=cols, show="headings")
+            for col in cols:
+                self.tree.heading(col, text=col.upper())
+                self.tree.column(col, anchor="w" if col in ("Name", "Location") else "center")
+            self.tree.bind("<Double-1>", self.on_store_double_click)
+            self.tree.pack(fill="both", expand=True)
+
         self.refresh_table()
 
     def on_category_double_click(self, event):
@@ -531,10 +555,22 @@ class App(ctk.CTk):
             self.switch_tab("Inventory", clear_filter=False)
         except IndexError: pass
 
+    def on_store_double_click(self, event):
+        try:
+            selected_item = self.tree.selection()[0]
+            store_id = self.tree.item(selected_item)['values'][0]
+            self.filter_store_id = str(store_id)
+            self.filter_category_id = None
+            self.filter_product_id = None
+            self.filter_warehouse_id = None
+            self.switch_tab("Inventory", clear_filter=False)
+        except IndexError: pass
+
     def clear_drilldown_filters(self):
         self.filter_category_id = None
         self.filter_product_id = None
         self.filter_warehouse_id = None
+        self.filter_store_id = None
         self.build_main_content()
 
     def set_filter(self, filter_type):
@@ -577,6 +613,7 @@ class App(ctk.CTk):
             for inv in data:
                 if self.filter_product_id and str(inv.product_id) != self.filter_product_id: continue
                 if self.filter_warehouse_id and str(inv.warehouse_id) != self.filter_warehouse_id: continue
+                if self.filter_store_id and str(inv.store_id) != self.filter_store_id: continue
                 # Lọc theo khoảng ngày Exp Date
                 if exp_from or exp_to:
                     try:
@@ -588,8 +625,18 @@ class App(ctk.CTk):
                         pass
                 prod_name = getattr(self.service.products_map.get(inv.product_id), 'name', inv.product_id)
                 status = "Low Stock" if inv.quantity <= self.service.settings["low_stock_threshold"] else "In Stock"
-                self.tree.insert("", "end", values=(prod_name, inv.batch_id, inv.warehouse_id,
+                
+                loc = f"🏪 {inv.store_id}" if inv.store_id else f"🏢 {inv.warehouse_id}"
+                
+                self.tree.insert("", "end", values=(inv.id, prod_name, inv.batch_id, loc,
                                                     inv.quantity, inv.exp_date, status))
+
+        elif self.active_tab == "Store":
+            data = self.service.search_items(keyword, "Store")
+            summary = self.service.get_store_summary()
+            for st in data:
+                stats = summary.get(st.id, {"batches": 0, "total_qty": 0})
+                self.tree.insert("", "end", values=(st.id, st.name, st.location, stats["batches"], stats["total_qty"]))
 
         elif self.active_tab == "Product":
             data = self.service.search_items(keyword, "Product")
@@ -707,15 +754,48 @@ class App(ctk.CTk):
         ctk.CTkButton(btn_row, text="❌ Xoá lọc", fg_color="#fee2e2", text_color="#b91c1c",
                       hover_color="#fca5a5", width=100, command=clear_filter).pack(side="left")
 
+    def open_add_category_dialog(self):
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Add New Category")
+        dialog.geometry("420x220")
+        dialog.attributes("-topmost", True)
+
+        cat_id = self.service.generate_category_id()
+        ctk.CTkLabel(dialog, text=f"Category ID (Auto): {cat_id}", font=("Inter", 12, "bold")).pack(pady=(20, 2), padx=20, anchor="w")
+
+        ctk.CTkLabel(dialog, text="Category Name:", font=("Inter", 12, "bold")).pack(pady=(10, 2), padx=20, anchor="w")
+        name_ent = ctk.CTkEntry(dialog, width=370, placeholder_text="VD: Mẹ và Bé")
+        name_ent.pack(padx=20)
+
+        def save_category():
+            cat_name = name_ent.get().strip()
+            if not cat_name:
+                messagebox.showerror("Lỗi", "Tên danh mục không được để trống!", parent=dialog)
+                return
+            try:
+                success = self.service.add_category(cat_id, cat_name, self.cursor, self.conn)
+                if success:
+                    self.history.push(AddCategoryCommand(cat_id, cat_name))
+                    self._update_undo_redo_buttons()
+                    self.refresh_table()
+                    dialog.destroy()
+                    messagebox.showinfo("Success", f"Đã thêm danh mục '{cat_name}' thành công!")
+                else:
+                    messagebox.showerror("Lỗi", f"Lỗi tạo danh mục!", parent=dialog)
+            except Exception as e:
+                messagebox.showerror("Lỗi", f"Lỗi: {e}", parent=dialog)
+
+        ctk.CTkButton(dialog, text="Save Category", fg_color="#10b981", hover_color="#059669",
+                      font=("Inter", 13, "bold"), command=save_category).pack(pady=25)
+
     def open_add_warehouse_dialog(self):
         dialog = ctk.CTkToplevel(self)
         dialog.title("Add New Warehouse")
-        dialog.geometry("420x320")
+        dialog.geometry("420x260")
         dialog.attributes("-topmost", True)
 
-        ctk.CTkLabel(dialog, text="Warehouse ID:", font=("Inter", 12, "bold")).pack(pady=(20, 2), padx=20, anchor="w")
-        id_ent = ctk.CTkEntry(dialog, width=370, placeholder_text="VD: WH-D")
-        id_ent.pack(padx=20)
+        wh_id = self.service.generate_warehouse_id()
+        ctk.CTkLabel(dialog, text=f"Warehouse ID (Auto): {wh_id}", font=("Inter", 12, "bold")).pack(pady=(20, 2), padx=20, anchor="w")
 
         ctk.CTkLabel(dialog, text="Warehouse Name:", font=("Inter", 12, "bold")).pack(pady=(10, 2), padx=20, anchor="w")
         name_ent = ctk.CTkEntry(dialog, width=370, placeholder_text="VD: Warehouse D")
@@ -726,11 +806,10 @@ class App(ctk.CTk):
         space_ent.pack(padx=20)
 
         def save_warehouse():
-            wh_id = id_ent.get().strip()
             wh_name = name_ent.get().strip()
             wh_space = space_ent.get().strip()
-            if not wh_id or not wh_name:
-                messagebox.showerror("Lỗi", "ID và Tên kho không được để trống!", parent=dialog)
+            if not wh_name:
+                messagebox.showerror("Lỗi", "Tên kho không được để trống!", parent=dialog)
                 return
             try:
                 space_val = int(wh_space) if wh_space else 0
@@ -751,7 +830,115 @@ class App(ctk.CTk):
                       font=("Inter", 13, "bold"), command=save_warehouse).pack(pady=25)
 
 
-    # ==========================================
+    def open_add_store_dialog(self):
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Add New Store")
+        dialog.geometry("420x260")
+        dialog.attributes("-topmost", True)
+
+        st_id = self.service.generate_store_id()
+        ctk.CTkLabel(dialog, text=f"Store ID (Auto): {st_id}", font=("Inter", 12, "bold")).pack(pady=(20, 2), padx=20, anchor="w")
+
+        ctk.CTkLabel(dialog, text="Store Name:", font=("Inter", 12, "bold")).pack(pady=(10, 2), padx=20, anchor="w")
+        name_ent = ctk.CTkEntry(dialog, width=370, placeholder_text="VD: Store Plaza")
+        name_ent.pack(padx=20)
+
+        ctk.CTkLabel(dialog, text="Location:", font=("Inter", 12, "bold")).pack(pady=(10, 2), padx=20, anchor="w")
+        loc_ent = ctk.CTkEntry(dialog, width=370, placeholder_text="VD: 789 West St")
+        loc_ent.pack(padx=20)
+
+        def save_store():
+            st_name = name_ent.get().strip()
+            st_loc = loc_ent.get().strip()
+            if not st_name:
+                messagebox.showerror("Lỗi", "Tên cửa hàng không được để trống!", parent=dialog)
+                return
+            try:
+                success = self.service.add_store(st_id, st_name, st_loc, self.cursor, self.conn)
+                if success:
+                    self.history.push(AddStoreCommand(st_id, st_name, st_loc))
+                    self._update_undo_redo_buttons()
+                    self.build_kpi_cards()
+                    self.refresh_table()
+                    dialog.destroy()
+                    messagebox.showinfo("Success", f"Đã thêm cửa hàng '{st_name}' thành công!")
+                else:
+                    messagebox.showerror("Lỗi", f"Store ID '{st_id}' đã tồn tại!", parent=dialog)
+            except Exception as e:
+                messagebox.showerror("Lỗi", f"Lỗi: {e}", parent=dialog)
+
+        ctk.CTkButton(dialog, text="Save Store", fg_color="#10b981", hover_color="#059669",
+                      font=("Inter", 13, "bold"), command=save_store).pack(pady=25)
+
+
+    def open_transfer_dialog(self):
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showwarning("Warning", "Vui lòng chọn 1 lô hàng từ Warehouse để luân chuyển!")
+            return
+        
+        item_data = self.tree.item(selected[0])['values']
+        item_id = item_data[0] # ID nằm ở cột đầu tiên
+        # Lấy từ service
+        source_item = self.service.inventory_map.get(item_id)
+        if not source_item or not source_item.warehouse_id:
+            messagebox.showwarning("Warning", "Chỉ có thể luân chuyển lô hàng từ Warehouse (Kho) xuống Store!")
+            return
+
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Transfer to Store")
+        dialog.geometry("400x350")
+        dialog.attributes("-topmost", True)
+
+        ctk.CTkLabel(dialog, text=f"Transferring Batch: {source_item.batch_id}", font=("Inter", 13, "bold")).pack(pady=(20, 10))
+        ctk.CTkLabel(dialog, text=f"Available Quantity: {source_item.quantity}", font=("Inter", 12)).pack(pady=(0, 15))
+
+        ctk.CTkLabel(dialog, text="Target Store ID:", font=("Inter", 12, "bold")).pack(anchor="w", padx=20)
+        store_ids = list(self.service.stores_map.keys())
+        if not store_ids:
+            messagebox.showwarning("Warning", "Hệ thống chưa có Cửa hàng nào. Vui lòng thêm Store trước.")
+            dialog.destroy()
+            return
+        
+        store_cb = ctk.CTkComboBox(dialog, values=store_ids, width=360)
+        store_cb.pack(padx=20, pady=(5, 15))
+
+        ctk.CTkLabel(dialog, text="Quantity to Transfer:", font=("Inter", 12, "bold")).pack(anchor="w", padx=20)
+        qty_ent = ctk.CTkEntry(dialog, width=360, placeholder_text=f"Max: {source_item.quantity}")
+        qty_ent.pack(padx=20, pady=(5, 20))
+
+        def confirm_transfer():
+            target_store = store_cb.get()
+            qty_str = qty_ent.get()
+            if not qty_str.isdigit():
+                messagebox.showerror("Lỗi", "Số lượng phải là số nguyên!", parent=dialog)
+                return
+            transfer_qty = int(qty_str)
+            if transfer_qty <= 0 or transfer_qty > source_item.quantity:
+                messagebox.showerror("Lỗi", "Số lượng không hợp lệ!", parent=dialog)
+                return
+            
+            try:
+                success, new_item_id = self.service.transfer_inventory(source_item.id, target_store, transfer_qty, self.cursor, self.conn)
+                if success:
+                    # Truyền Undo/Redo command
+                    self.history.push(TransferInventoryCommand(
+                        source_item_id=source_item.id,
+                        target_item_id=new_item_id,
+                        target_store_id=target_store,
+                        transfer_qty=transfer_qty
+                    ))
+                    self._update_undo_redo_buttons()
+                    self.refresh_table()
+                    dialog.destroy()
+                    messagebox.showinfo("Success", f"Đã luân chuyển {transfer_qty} sản phẩm sang Store '{target_store}'!")
+                else:
+                    messagebox.showerror("Lỗi", "Chuyển kho thất bại!", parent=dialog)
+            except Exception as e:
+                messagebox.showerror("Lỗi", f"Lỗi transfer: {e}", parent=dialog)
+
+        ctk.CTkButton(dialog, text="Confirm Transfer", fg_color="#8b5cf6", hover_color="#7c3aed",
+                      font=("Inter", 13, "bold"), command=confirm_transfer).pack(pady=10)
     # UNDO / REDO
     # ==========================================
     def do_undo(self):
