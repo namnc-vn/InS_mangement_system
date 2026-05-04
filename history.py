@@ -4,8 +4,8 @@ from collections import deque
 # COMMAND PATTERN — Base class
 # ==========================================
 class Command:
-    def undo(self, service, cursor, conn): pass
-    def redo(self, service, cursor, conn): pass
+    def undo(self, service): pass
+    def redo(self, service): pass
     def description(self): return "Unknown"
 
 
@@ -26,14 +26,14 @@ class AddInventoryCommand(Command):
         self.quantity = quantity
         self.warehouse_id = warehouse_id
 
-    def undo(self, service, cursor, conn):
-        service.remove_inventory_item(self.item_id, cursor, conn)
+    def undo(self, service):
+        service.remove_inventory_item(self.item_id)
 
-    def redo(self, service, cursor, conn):
+    def redo(self, service):
         service.restore_inventory_item(
             self.item_id, self.product_id, self.batch_id,
             self.mfg_date, self.exp_date, self.quantity,
-            self.warehouse_id, cursor, conn
+            self.warehouse_id
         )
 
     def description(self):
@@ -47,11 +47,11 @@ class UpdateInventoryQtyCommand(Command):
         self.old_qty = old_qty
         self.added_qty = added_qty
 
-    def undo(self, service, cursor, conn):
-        service.update_inventory_quantity(self.item_id, self.old_qty, cursor, conn)
+    def undo(self, service):
+        service.update_inventory_quantity(self.item_id, self.old_qty)
 
-    def redo(self, service, cursor, conn):
-        service.update_inventory_quantity(self.item_id, self.old_qty + self.added_qty, cursor, conn)
+    def redo(self, service):
+        service.update_inventory_quantity(self.item_id, self.old_qty + self.added_qty)
 
     def description(self):
         return f"Cập nhật SL lô ID {self.item_id}: {self.old_qty} → {self.old_qty + self.added_qty}"
@@ -66,13 +66,13 @@ class AddProductCommand(Command):
         self.price = price
         self.status = status
 
-    def undo(self, service, cursor, conn):
-        service.remove_product(self.prod_id, cursor, conn)
+    def undo(self, service):
+        service.remove_product(self.prod_id)
 
-    def redo(self, service, cursor, conn):
+    def redo(self, service):
         service.restore_product(
             self.prod_id, self.name, self.category_id,
-            self.price, self.status, cursor, conn
+            self.price, self.status
         )
 
     def description(self):
@@ -85,11 +85,11 @@ class AddCategoryCommand(Command):
         self.cat_id = cat_id
         self.name = name
 
-    def undo(self, service, cursor, conn):
-        service.remove_category(self.cat_id, cursor, conn)
+    def undo(self, service):
+        service.remove_category(self.cat_id)
 
-    def redo(self, service, cursor, conn):
-        service.restore_category(self.cat_id, self.name, cursor, conn)
+    def redo(self, service):
+        service.restore_category(self.cat_id, self.name)
 
     def description(self):
         return f"Thêm danh mục: {self.name} ({self.cat_id})"
@@ -102,11 +102,11 @@ class AddWarehouseCommand(Command):
         self.name = name
         self.space = space
 
-    def undo(self, service, cursor, conn):
-        service.remove_warehouse(self.wh_id, cursor, conn)
+    def undo(self, service):
+        service.remove_warehouse(self.wh_id)
 
-    def redo(self, service, cursor, conn):
-        service.restore_warehouse(self.wh_id, self.name, self.space, cursor, conn)
+    def redo(self, service):
+        service.restore_warehouse(self.wh_id, self.name, self.space)
 
     def description(self):
         return f"Thêm kho: {self.name} ({self.wh_id})"
@@ -118,11 +118,11 @@ class AddStoreCommand(Command):
         self.name = name
         self.location = location
 
-    def undo(self, service, cursor, conn):
-        service.remove_store(self.store_id, cursor, conn)
+    def undo(self, service):
+        service.remove_store(self.store_id)
 
-    def redo(self, service, cursor, conn):
-        service.restore_store(self.store_id, self.name, self.location, cursor, conn)
+    def redo(self, service):
+        service.restore_store(self.store_id, self.name, self.location)
 
     def description(self):
         return f"Thêm cửa hàng: {self.name} ({self.store_id})"
@@ -136,29 +136,25 @@ class TransferInventoryCommand(Command):
         self.transfer_qty = transfer_qty
         self.is_merge = is_merge
 
-    def undo(self, service, cursor, conn):
-        # 1. Khôi phục số lượng ở Warehouse (nguồn)
-        source_item = service.inventory_map.get(self.source_item_id)
-        if source_item:
-            source_item.quantity += self.transfer_qty
-            cursor.execute("UPDATE inventory SET quantity = %s WHERE id = %s", (source_item.quantity, self.source_item_id))
-        else:
-            # Nếu Warehouse lô cũ đã bị xóa (vì transfer toàn bộ), cần Redo việc chèn lại lô cũ... 
-            # Tuy nhiên để đơn giản, ta đang giả sử Transfer chỉ cập nhật source. 
-            pass # (Sẽ cần tối ưu thêm nếu source_item bị xóa)
-
-        # 2. Xóa hoặc trừ ở Store (đích)
+    def undo(self, service):
+        # Revert transfer using service methods only
         target_item = service.inventory_map.get(self.target_item_id)
-        if target_item:
-            target_item.quantity -= self.transfer_qty
-            if target_item.quantity > 0:
-                cursor.execute("UPDATE inventory SET quantity = %s WHERE id = %s", (target_item.quantity, self.target_item_id))
-            else:
-                service.remove_inventory_item(self.target_item_id, cursor, conn)
-        conn.commit()
+        source_item = service.inventory_map.get(self.source_item_id)
 
-    def redo(self, service, cursor, conn):
-        service.transfer_inventory(self.source_item_id, self.target_store_id, self.transfer_qty, cursor, conn)
+        if target_item:
+            if target_item.quantity > self.transfer_qty:
+                service.update_inventory_quantity(self.target_item_id, target_item.quantity - self.transfer_qty)
+            else:
+                service.remove_inventory_item(self.target_item_id)
+
+        if source_item:
+            service.update_inventory_quantity(self.source_item_id, source_item.quantity + self.transfer_qty)
+        else:
+            # If source item no longer exists, we cannot fully restore it here.
+            pass
+
+    def redo(self, service):
+        service.transfer_inventory(self.source_item_id, self.target_store_id, self.transfer_qty)
 
     def description(self):
         return f"Chuyển {self.transfer_qty} sản phẩm sang Cửa hàng {self.target_store_id}"
@@ -188,19 +184,19 @@ class CommandHistory:
         self.undo_stack.append(command)
         self.redo_stack.clear()
 
-    def undo(self, service, cursor, conn):
+    def undo(self, service):
         if not self.undo_stack:
             return None
         cmd = self.undo_stack.pop()
-        cmd.undo(service, cursor, conn)
+        cmd.undo(service)
         self.redo_stack.append(cmd)
         return cmd
 
-    def redo(self, service, cursor, conn):
+    def redo(self, service):
         if not self.redo_stack:
             return None
         cmd = self.redo_stack.pop()
-        cmd.redo(service, cursor, conn)
+        cmd.redo(service)
         self.undo_stack.append(cmd)
         return cmd
 

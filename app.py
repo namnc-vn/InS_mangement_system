@@ -23,14 +23,16 @@ class App(ctk.CTk):
         self.geometry("1250x800")
         self.configure(fg_color=BG_APP)
 
-        self.service = Service()
+        self.conn = None
+        self.service = None
         self.history = CommandHistory()
         try:
             self.conn = db_connect.get_connection()
-            self.cursor = self.conn.cursor()
-            self.service.load_data(self.cursor)
+            self.service = Service(self.conn)
+            self.service.load_data()
         except Exception as e:
             messagebox.showwarning("Lỗi Database", f"Chạy offline mode. Lỗi DB: {e}")
+            self.service = Service()
 
         self.active_tab = "Category" 
         self.current_filter = "ALL"
@@ -41,6 +43,9 @@ class App(ctk.CTk):
         # Lọc theo khoảng — Quantity (BST) & Exp Date
         self.range_filter = {"qty_min": None, "qty_max": None,
                              "exp_from": None, "exp_to": None}
+        # Checkbox tracking cho Category & Product
+        self.selected_categories = set()  # {cat_id}
+        self.selected_products = set()    # {prod_id}
 
         self.style_treeview()
         self.build_top_header()
@@ -258,7 +263,7 @@ class App(ctk.CTk):
                 old_qty  = existing.quantity if existing else None
                 old_id   = existing.id if existing else None
 
-                self.service.add_inventory_item(p_id, qty, b_id, mfg, exp, wh, self.cursor, self.conn)
+                self.service.add_inventory_item(p_id, qty, b_id, mfg, exp, wh)
 
                 # Tạo và đẩy Command vào history
                 if old_qty is not None:
@@ -313,7 +318,7 @@ class App(ctk.CTk):
                 cat_id = cat_cb.get().split(" - ")[0]
                 price  = price_ent.get().strip()
                 status = "Active"
-                success = self.service.add_product(p_id, p_name, cat_id, price, status, self.cursor, self.conn)
+                success = self.service.add_product(p_id, p_name, cat_id, price, status)
                 if success:
                     self.history.push(AddProductCommand(p_id, p_name, cat_id, price, status))
                     self._update_undo_redo_buttons()
@@ -365,7 +370,7 @@ class App(ctk.CTk):
         normal_cards = [
             {"title": "Total Products", "key": "Total Products", "icon": "📦", "bg_icon": "#e0e7ff", "icon_color": "#4f46e5"},
             {"title": "Warehouses", "key": "Warehouses", "icon": "🏢", "bg_icon": "#dcfce7", "icon_color": "#16a34a"},
-            {"title": "Inventory Value", "key": "Inventory Value", "icon": "📋", "bg_icon": "#e0e7ff", "icon_color": "#4f46e5"}
+            {"title": "Stores", "key": "Stores", "icon": "🏬", "bg_icon": "#f0f9ff", "icon_color": "#0c4a6e"}
         ]
 
         for i, cfg in enumerate(normal_cards):
@@ -398,11 +403,88 @@ class App(ctk.CTk):
         ctk.CTkLabel(bot_alert, text="⏳ Expiring Soon:", font=("Inter", 13, "bold"), text_color="#ef4444").pack(side="left")
         ctk.CTkLabel(bot_alert, text=f"{stats['Expiring Count']} items", font=("Inter", 14, "bold"), text_color=TEXT_MAIN).pack(side="right")
 
+        alert_card.bind("<Button-1>", lambda e: self.open_warning_dialog())
+        top_alert.bind("<Button-1>", lambda e: self.open_warning_dialog())
+        bot_alert.bind("<Button-1>", lambda e: self.open_warning_dialog())
+
+    def open_warning_dialog(self):
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Inventory Alerts")
+        dialog.geometry("940x560")
+        dialog.attributes("-topmost", True)
+
+        header = ctk.CTkLabel(dialog, text="Inventory Alerts", font=("Inter", 20, "bold"), text_color=TEXT_MAIN)
+        header.pack(anchor="w", padx=24, pady=(20, 10))
+
+        desc = ctk.CTkLabel(dialog, text="Danh sách hàng sắp hết hạn và hàng tồn kho thấp", font=("Inter", 13), text_color=TEXT_SUB)
+        desc.pack(anchor="w", padx=24, pady=(0, 20))
+
+        content_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        content_frame.pack(fill="both", expand=True, padx=20, pady=(0, 20))
+        content_frame.grid_columnconfigure(0, weight=1)
+        content_frame.grid_columnconfigure(1, weight=1)
+
+        low_frame = ctk.CTkFrame(content_frame, fg_color="#fef7ed", corner_radius=14, border_width=1, border_color="#fcd34d")
+        low_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 10), pady=10)
+        exp_frame = ctk.CTkFrame(content_frame, fg_color="#fef2f2", corner_radius=14, border_width=1, border_color="#fca5a5")
+        exp_frame.grid(row=0, column=1, sticky="nsew", padx=(10, 0), pady=10)
+
+        ctk.CTkLabel(low_frame, text=f"⚠️ Low Stock ({len(self.service.get_low_stock_items())})", font=("Inter", 16, "bold"), text_color="#c2410c").pack(anchor="w", padx=20, pady=(20, 10))
+        low_tree = ttk.Treeview(low_frame, columns=("Product", "SKU", "Location", "Quantity", "Threshold"), show="headings", height=8)
+        for col in ("Product", "SKU", "Location", "Quantity", "Threshold"):
+            low_tree.heading(col, text=col)
+            low_tree.column(col, anchor="center" if col not in ("Product", "Location") else "w", width=120)
+        low_tree.tag_configure("lowstock", background="#fff7ed", foreground="#b45309")
+        low_tree.pack(fill="both", expand=True, padx=20, pady=(0, 20))
+
+        exp_items = self.service.get_expiring_items()
+        ctk.CTkLabel(exp_frame, text=f"⏳ Expiring Soon ({len(exp_items)})", font=("Inter", 16, "bold"), text_color="#b91c1c").pack(anchor="w", padx=20, pady=(20, 10))
+        exp_tree = ttk.Treeview(exp_frame, columns=("Product", "SKU", "Location", "Quantity", "Exp Date", "Remaining"), show="headings", height=8)
+        for col in ("Product", "SKU", "Location", "Quantity", "Exp Date", "Remaining"):
+            exp_tree.heading(col, text=col)
+            exp_tree.column(col, anchor="center" if col not in ("Product", "Location") else "w", width=120)
+        exp_tree.tag_configure("expired", background="#fee2e2", foreground="#991b1b")
+        exp_tree.tag_configure("expiring", background="#fed7aa", foreground="#c2410c")
+        exp_tree.tag_configure("warning", background="#fef3c7", foreground="#92400e")
+        exp_tree.pack(fill="both", expand=True, padx=20, pady=(0, 20))
+
+        low_stock_threshold = self.service.settings.get("low_stock_threshold", 10)
+        for inv in self.service.get_low_stock_items():
+            prod_name = getattr(self.service.products_map.get(inv.product_id), 'name', inv.product_id)
+            loc = f"🏪 {inv.store_id}" if inv.store_id else f"🏢 {inv.warehouse_id}"
+            low_tree.insert("", "end", values=(prod_name, inv.batch_id, loc, inv.quantity, low_stock_threshold), tags=("lowstock",))
+
+        from datetime import datetime, date as date_type
+        today = datetime.today().date()
+        for inv in exp_items:
+            prod_name = getattr(self.service.products_map.get(inv.product_id), 'name', inv.product_id)
+            loc = f"🏪 {inv.store_id}" if inv.store_id else f"🏢 {inv.warehouse_id}"
+            exp_date = inv.exp_date
+            if isinstance(exp_date, str):
+                try:
+                    exp_date = datetime.strptime(exp_date, "%Y-%m-%d").date()
+                except Exception:
+                    exp_date = exp_date
+            days_left = (exp_date - today).days if isinstance(exp_date, date_type) else "?"
+            remaining = f"{days_left} ngày" if isinstance(days_left, int) else str(days_left)
+            if isinstance(days_left, int):
+                if days_left < 0:
+                    tag = "expired"
+                elif days_left <= 7:
+                    tag = "expiring"
+                else:
+                    tag = "warning"
+            else:
+                tag = "warning"
+            exp_tree.insert("", "end", values=(prod_name, inv.batch_id, loc, inv.quantity, exp_date, remaining), tags=(tag,))
+
+        ctk.CTkButton(dialog, text="Đóng", fg_color="#6b7280", hover_color="#525252", command=dialog.destroy).pack(pady=16)
+
     def build_tabs(self):
         tab_frame = ctk.CTkFrame(self, fg_color="transparent", height=45)
         tab_frame.pack(fill="x", padx=38, pady=0)
         self.tab_btns = {}
-        tabs = [("🏷️ Category", "Category"), ("📦 Product", "Product"), ("📋 Inventory", "Inventory"), ("🏢 Warehouse", "Warehouse"), ("🏪 Store", "Store")]
+        tabs = [("🏷️ Category", "Category"), ("📦 Product", "Product"), ("🏢 Warehouse", "Warehouse"), ("🏪 Store", "Store")]
         for text, name in tabs:
             btn = ctk.CTkButton(tab_frame, text=text, font=("Inter", 14, "bold"), fg_color="transparent",
                 text_color=PRIMARY_COLOR if name == self.active_tab else TEXT_SUB,
@@ -446,18 +528,21 @@ class App(ctk.CTk):
             ctk.CTkButton(toolbar, text="❌ Bỏ lọc", fg_color="#fee2e2", text_color="#b91c1c", hover_color="#fca5a5",
                           width=60, height=35, command=self.clear_drilldown_filters).pack(side="left")
 
-        if self.active_tab == "Inventory":
-            filter_frame = ctk.CTkFrame(toolbar, fg_color="transparent")
-            filter_frame.pack(side="right")
-            self.btn_all = ctk.CTkButton(filter_frame, text="All Items", fg_color=PRIMARY_COLOR, width=80, height=35, command=lambda: self.set_filter("ALL"))
-            self.btn_all.pack(side="left", padx=5)
-            self.btn_low = ctk.CTkButton(filter_frame, text="⚠️ Low Stock", fg_color="#ffffff", text_color=TEXT_MAIN, border_width=1, width=90, height=35, hover_color="#f3f4f6", command=lambda: self.set_filter("LOW_STOCK"))
-            self.btn_low.pack(side="left", padx=5)
-            self.btn_exp = ctk.CTkButton(filter_frame, text="⏳ Expiring", fg_color="#ffffff", text_color=TEXT_MAIN, border_width=1, width=90, height=35, hover_color="#f3f4f6", command=lambda: self.set_filter("EXPIRING"))
-            self.btn_exp.pack(side="left", padx=5)
-            ctk.CTkButton(filter_frame, text="🚚 Transfer", fg_color="#8b5cf6", hover_color="#7c3aed",
-                          font=("Inter", 12, "bold"), height=35,
-                          command=self.open_transfer_dialog).pack(side="left", padx=10)
+        if self.active_tab == "Category":
+            button_frame = ctk.CTkFrame(toolbar, fg_color="transparent")
+            button_frame.pack(side="right")
+            ctk.CTkButton(button_frame, text="📋 Show Inventory", fg_color="#8b5cf6", hover_color="#7c3aed",
+                          font=("Inter", 13, "bold"), height=38,
+                          command=self.open_inventory_dialog_for_categories).pack(side="left", padx=5)
+            ctk.CTkButton(button_frame, text="➕ Add Category", fg_color="#10b981", hover_color="#059669",
+                          font=("Inter", 13, "bold"), height=38,
+                          command=self.open_add_category_dialog).pack(side="left", padx=5)
+        elif self.active_tab == "Product":
+            button_frame = ctk.CTkFrame(toolbar, fg_color="transparent")
+            button_frame.pack(side="right")
+            ctk.CTkButton(button_frame, text="📋 Show Inventory", fg_color="#8b5cf6", hover_color="#7c3aed",
+                          font=("Inter", 13, "bold"), height=38,
+                          command=self.open_inventory_dialog_for_products).pack(side="left", padx=5)
         elif self.active_tab == "Warehouse":
             ctk.CTkButton(toolbar, text="➕ Add Warehouse", fg_color="#10b981", hover_color="#059669",
                           font=("Inter", 13, "bold"), height=38,
@@ -466,44 +551,30 @@ class App(ctk.CTk):
             ctk.CTkButton(toolbar, text="➕ Add Store", fg_color="#10b981", hover_color="#059669",
                           font=("Inter", 13, "bold"), height=38,
                           command=self.open_add_store_dialog).pack(side="right")
-        elif self.active_tab == "Category":
-            ctk.CTkButton(toolbar, text="➕ Add Category", fg_color="#10b981", hover_color="#059669",
-                          font=("Inter", 13, "bold"), height=38,
-                          command=self.open_add_category_dialog).pack(side="right")
 
         table_container = ctk.CTkFrame(self.content_area, fg_color="transparent")
         table_container.pack(fill="both", expand=True, padx=20, pady=(0, 20))
 
-        if self.active_tab == "Inventory":
-            cols = ("ID", "Product", "Batch", "Location", "Quantity", "Exp Date", "Status")
-            self.tree = ttk.Treeview(table_container, columns=cols, show="headings", selectmode="extended")
-            for col in cols:
-                self.tree.heading(col, text=col.upper())
-                self.tree.column(col, anchor="center" if col not in ("Product", "Location") else "w", width=120 if col == "Location" else 100)
-                if col == "ID": self.tree.column(col, width=50)
-            # Heading có thể click để lọc theo khoảng (hiển thị icon khi đang filter)
-            qty_on = self.range_filter["qty_min"] is not None or self.range_filter["qty_max"] is not None
-            exp_on = self.range_filter["exp_from"] is not None or self.range_filter["exp_to"] is not None
-            self.tree.heading("Quantity",
-                              text="QUANTITY 🔍" if qty_on else "QUANTITY ▲▼",
-                              command=self.open_qty_range_filter)
-            self.tree.heading("Exp Date",
-                              text="EXP DATE 🔍" if exp_on else "EXP DATE ▲▼",
-                              command=self.open_exp_date_filter)
-            self.tree.pack(fill="both", expand=True)
-
-        elif self.active_tab == "Product":
-            cols = ("ID", "Name", "Category ID", "Price", "Status")
+        if self.active_tab == "Product":
+            cols = ("✓", "ID", "Name", "Category ID", "Price", "Status")
             self.tree = ttk.Treeview(table_container, columns=cols, show="headings")
-            for col in cols: self.tree.heading(col, text=col.upper())
+            self.tree.heading("✓", text="✓")
+            self.tree.column("✓", width=30, anchor="center")
+            for col in cols[1:]:
+                self.tree.heading(col, text=col.upper())
             self.tree.bind("<Double-1>", self.on_product_double_click)
+            self.tree.bind("<Button-1>", self.on_tree_click_product_checkbox)
             self.tree.pack(fill="both", expand=True)
 
         elif self.active_tab == "Category":
-            cols = ("ID", "Name")
+            cols = ("✓", "ID", "Name")
             self.tree = ttk.Treeview(table_container, columns=cols, show="headings")
-            for col in cols: self.tree.heading(col, text=col.upper())
+            self.tree.heading("✓", text="✓")
+            self.tree.column("✓", width=30, anchor="center")
+            for col in cols[1:]:
+                self.tree.heading(col, text=col.upper())
             self.tree.bind("<Double-1>", self.on_category_double_click)
+            self.tree.bind("<Button-1>", self.on_tree_click_category_checkbox)
             self.tree.pack(fill="both", expand=True)
 
         elif self.active_tab == "Warehouse":
@@ -529,7 +600,8 @@ class App(ctk.CTk):
     def on_category_double_click(self, event):
         try:
             selected_item = self.tree.selection()[0]
-            cat_id = self.tree.item(selected_item)['values'][0]
+            values = self.tree.item(selected_item)['values']
+            cat_id = values[1] if len(values) > 1 else values[0]
             self.filter_category_id = str(cat_id)
             self.filter_product_id = None
             self.switch_tab("Product", clear_filter=False)
@@ -538,34 +610,167 @@ class App(ctk.CTk):
     def on_product_double_click(self, event):
         try:
             selected_item = self.tree.selection()[0]
-            prod_id = self.tree.item(selected_item)['values'][0]
-            self.filter_product_id = str(prod_id)
-            self.filter_category_id = None
-            self.filter_warehouse_id = None
-            self.switch_tab("Inventory", clear_filter=False)
+            values = self.tree.item(selected_item)['values']
+            prod_id = values[1] if len(values) > 1 else values[0]
+            self.selected_products = {str(prod_id)}
+            self.open_inventory_dialog_for_products()
         except IndexError: pass
 
+    def on_tree_click_category_checkbox(self, event):
+        """Handle checkbox click in Category treeview"""
+        region = self.tree.identify_region(event.x, event.y)
+        if region != "cell":
+            return
+        
+        col = self.tree.identify_column(event.x)
+        if col != "#1":  # Column 1 is the checkbox column
+            return
+        
+        row = self.tree.identify_row(event.y)
+        if not row:
+            return
+        
+        # Get the category ID (column 1, which is index 1 in values)
+        values = self.tree.item(row)['values']
+        cat_id = str(values[1])  # Column "ID" is at index 1
+        
+        # Toggle checkbox
+        if cat_id in self.selected_categories:
+            self.selected_categories.discard(cat_id)
+        else:
+            self.selected_categories.add(cat_id)
+        
+        # Update display - re-render the checkbox column
+        self.tree.item(row, values=(
+            "✓" if cat_id in self.selected_categories else "☐",
+            values[1], values[2]
+        ))
+
+    def on_tree_click_product_checkbox(self, event):
+        """Handle checkbox click in Product treeview"""
+        region = self.tree.identify_region(event.x, event.y)
+        if region != "cell":
+            return
+        
+        col = self.tree.identify_column(event.x)
+        if col != "#1":  # Column 1 is the checkbox column
+            return
+        
+        row = self.tree.identify_row(event.y)
+        if not row:
+            return
+        
+        # Get the product ID (column 1, which is index 1 in values)
+        values = self.tree.item(row)['values']
+        prod_id = str(values[1])  # Column "ID" is at index 1
+        
+        # Toggle checkbox
+        if prod_id in self.selected_products:
+            self.selected_products.discard(prod_id)
+        else:
+            self.selected_products.add(prod_id)
+        
+        # Update display - re-render the checkbox column
+        self.tree.item(row, values=(
+            "✓" if prod_id in self.selected_products else "☐",
+            values[1], values[2], values[3], values[4], values[5]
+        ))
+    
     def on_warehouse_double_click(self, event):
         try:
             selected_item = self.tree.selection()[0]
             wh_id = self.tree.item(selected_item)['values'][0]
-            self.filter_warehouse_id = str(wh_id)
-            self.filter_category_id = None
-            self.filter_product_id = None
-            self.switch_tab("Inventory", clear_filter=False)
+            # Load and display inventory for warehouse
+            inventory_items = [inv for inv in self.service.inventory_map.values() 
+                             if str(inv.warehouse_id) == str(wh_id)]
+            if not inventory_items:
+                messagebox.showinfo("Info", f"No inventory found in Warehouse {wh_id}", parent=self)
+                return
+            self._show_inventory_dialog("Warehouse Inventory", inventory_items)
         except IndexError: pass
 
     def on_store_double_click(self, event):
         try:
             selected_item = self.tree.selection()[0]
             store_id = self.tree.item(selected_item)['values'][0]
-            self.filter_store_id = str(store_id)
-            self.filter_category_id = None
-            self.filter_product_id = None
-            self.filter_warehouse_id = None
-            self.switch_tab("Inventory", clear_filter=False)
+            # Load and display inventory for store
+            inventory_items = [inv for inv in self.service.inventory_map.values() 
+                             if str(inv.store_id) == str(store_id)]
+            if not inventory_items:
+                messagebox.showinfo("Info", f"No inventory found in Store {store_id}", parent=self)
+                return
+            self._show_inventory_dialog("Store Inventory", inventory_items)
         except IndexError: pass
 
+    def _format_inventory_status(self, inv, low_stock_threshold):
+        status = "Low Stock" if inv.quantity <= low_stock_threshold else "In Stock"
+        exp_date = inv.exp_date
+        days_left = None
+        if isinstance(exp_date, str):
+            try:
+                exp_date = datetime.strptime(exp_date, "%Y-%m-%d").date()
+            except Exception:
+                exp_date = exp_date
+        if isinstance(exp_date, date_type):
+            days_left = (exp_date - datetime.today().date()).days
+
+        if isinstance(days_left, int) and days_left < 0:
+            return "🔴 Expired"
+        if isinstance(days_left, int) and days_left <= 7:
+            return "🟠 Expiring"
+        if isinstance(days_left, int) and days_left <= 30:
+            return "🟡 Warning"
+        if status == "Low Stock":
+            return "🟡 Low Stock"
+        return "🟢 In Stock"
+
+    def _format_inventory_status_and_tag(self, inv, low_stock_threshold):
+        status_text = self._format_inventory_status(inv, low_stock_threshold)
+        if status_text.startswith("🔴"):
+            return status_text, "expired"
+        if status_text.startswith("🟠"):
+            return status_text, "expiring"
+        if status_text.startswith("🟡") and "Warning" in status_text:
+            return status_text, "warning"
+        if status_text.startswith("🟡") and "Low Stock" in status_text:
+            return status_text, "lowstock"
+        return status_text, "instock"
+
+    def _show_inventory_dialog(self, title, inventory_items):
+        """Generic dialog to show inventory items"""
+        dialog = ctk.CTkToplevel(self)
+        dialog.title(title)
+        dialog.geometry("900x500")
+        dialog.attributes("-topmost", True)
+        
+        if not inventory_items:
+            ctk.CTkLabel(dialog, text="No inventory found", 
+                        font=("Inter", 12)).pack(pady=20)
+            return
+        
+        # Treeview để hiển thị inventory
+        cols = ("ID", "Product", "Batch", "Quantity", "Location", "Exp Date", "Status")
+        tree = ttk.Treeview(dialog, columns=cols, show="headings", height=20)
+        for col in cols:
+            tree.heading(col, text=col.upper())
+            tree.column(col, anchor="center" if col not in ("Product", "Location") else "w", width=100)
+        
+        tree.tag_configure("instock", foreground="#0f766e", background="#ecfdf5")
+        tree.tag_configure("lowstock", foreground="#78350f", background="#fef3c7")
+        tree.tag_configure("expired", foreground="#7f1d1d", background="#fee2e2")
+        tree.tag_configure("expiring", foreground="#9a3412", background="#ffedd5")
+        tree.tag_configure("warning", foreground="#92400e", background="#fef9c3")
+        
+        # Thêm data
+        low_stock_threshold = self.service.settings.get("low_stock_threshold", 10)
+        for inv in inventory_items:
+            prod_name = getattr(self.service.products_map.get(inv.product_id), 'name', inv.product_id)
+            status_text, status_tag = self._format_inventory_status_and_tag(inv, low_stock_threshold)
+            loc = f"🏪 {inv.store_id}" if inv.store_id else f"🏢 {inv.warehouse_id}"
+            tree.insert("", "end", values=(inv.id, prod_name, inv.batch_id, inv.quantity, loc, inv.exp_date, status_text), tags=(status_tag,))
+        
+        tree.pack(fill="both", expand=True, padx=10, pady=10)
+    
     def clear_drilldown_filters(self):
         self.filter_category_id = None
         self.filter_product_id = None
@@ -585,53 +790,7 @@ class App(ctk.CTk):
         for item in self.tree.get_children(): self.tree.delete(item)
         keyword = self.search_var.get()
         
-        if self.active_tab == "Inventory":
-            qty_min = self.range_filter["qty_min"]
-            qty_max = self.range_filter["qty_max"]
-            exp_from = self.range_filter["exp_from"]
-            exp_to   = self.range_filter["exp_to"]
-
-            if self.current_filter == "LOW_STOCK":
-                data = self.service.get_low_stock_items()
-            elif self.current_filter == "EXPIRING":
-                data = self.service.get_expiring_items()
-            elif qty_min is not None or qty_max is not None:
-                # Dùng BST range_search — O(log n + k), không cần duyệt toàn bộ
-                lo = qty_min if qty_min is not None else 0
-                hi = qty_max if qty_max is not None else 999_999
-                bst_items = self.service.qty_bst.range_search(lo, hi)
-                bst_ids = {inv.id for inv in bst_items}
-                if keyword.strip():
-                    data = [inv for inv in self.service.search_items(keyword, "Inventory")
-                            if inv.id in bst_ids]
-                else:
-                    data = [inv for inv in self.service.inventory_map.values()
-                            if inv.id in bst_ids]
-            else:
-                data = self.service.search_items(keyword, "Inventory")
-
-            for inv in data:
-                if self.filter_product_id and str(inv.product_id) != self.filter_product_id: continue
-                if self.filter_warehouse_id and str(inv.warehouse_id) != self.filter_warehouse_id: continue
-                if self.filter_store_id and str(inv.store_id) != self.filter_store_id: continue
-                # Lọc theo khoảng ngày Exp Date
-                if exp_from or exp_to:
-                    try:
-                        exp_d = (datetime.strptime(str(inv.exp_date), "%Y-%m-%d").date()
-                                 if isinstance(inv.exp_date, str) else inv.exp_date)
-                        if exp_from and exp_d < exp_from: continue
-                        if exp_to   and exp_d > exp_to:   continue
-                    except Exception:
-                        pass
-                prod_name = getattr(self.service.products_map.get(inv.product_id), 'name', inv.product_id)
-                status = "Low Stock" if inv.quantity <= self.service.settings["low_stock_threshold"] else "In Stock"
-                
-                loc = f"🏪 {inv.store_id}" if inv.store_id else f"🏢 {inv.warehouse_id}"
-                
-                self.tree.insert("", "end", values=(inv.id, prod_name, inv.batch_id, loc,
-                                                    inv.quantity, inv.exp_date, status))
-
-        elif self.active_tab == "Store":
+        if self.active_tab == "Store":
             data = self.service.search_items(keyword, "Store")
             summary = self.service.get_store_summary()
             for st in data:
@@ -642,12 +801,14 @@ class App(ctk.CTk):
             data = self.service.search_items(keyword, "Product")
             for p in data:
                 if self.filter_category_id and str(p.category_id) != self.filter_category_id: continue
-                self.tree.insert("", "end", values=(p.id, p.name, p.category_id, f"${p.price}", getattr(p, 'status', 'Active')))
+                checkbox = "✓" if str(p.id) in self.selected_products else "☐"
+                self.tree.insert("", "end", values=(checkbox, p.id, p.name, p.category_id, f"${p.price}", getattr(p, 'status', 'Active')))
                 
         elif self.active_tab == "Category":
             data = self.service.search_items(keyword, "Category")
             for c in data:
-                self.tree.insert("", "end", values=(c.id, c.name))
+                checkbox = "✓" if str(c.id) in self.selected_categories else "☐"
+                self.tree.insert("", "end", values=(checkbox, c.id, c.name))
 
         elif self.active_tab == "Warehouse":
             data = self.service.search_items(keyword, "Warehouse")
@@ -773,7 +934,7 @@ class App(ctk.CTk):
                 messagebox.showerror("Lỗi", "Tên danh mục không được để trống!", parent=dialog)
                 return
             try:
-                success = self.service.add_category(cat_id, cat_name, self.cursor, self.conn)
+                success = self.service.add_category(cat_id, cat_name)
                 if success:
                     self.history.push(AddCategoryCommand(cat_id, cat_name))
                     self._update_undo_redo_buttons()
@@ -813,7 +974,7 @@ class App(ctk.CTk):
                 return
             try:
                 space_val = int(wh_space) if wh_space else 0
-                success = self.service.add_warehouse(wh_id, wh_name, space_val, self.cursor, self.conn)
+                success = self.service.add_warehouse(wh_id, wh_name, space_val)
                 if success:
                     self.history.push(AddWarehouseCommand(wh_id, wh_name, space_val))
                     self._update_undo_redo_buttons()
@@ -854,7 +1015,7 @@ class App(ctk.CTk):
                 messagebox.showerror("Lỗi", "Tên cửa hàng không được để trống!", parent=dialog)
                 return
             try:
-                success = self.service.add_store(st_id, st_name, st_loc, self.cursor, self.conn)
+                success = self.service.add_store(st_id, st_name, st_loc)
                 if success:
                     self.history.push(AddStoreCommand(st_id, st_name, st_loc))
                     self._update_undo_redo_buttons()
@@ -919,7 +1080,7 @@ class App(ctk.CTk):
                 return
             
             try:
-                success, new_item_id = self.service.transfer_inventory(source_item.id, target_store, transfer_qty, self.cursor, self.conn)
+                success, new_item_id = self.service.transfer_inventory(source_item.id, target_store, transfer_qty)
                 if success:
                     # Truyền Undo/Redo command
                     self.history.push(TransferInventoryCommand(
@@ -939,6 +1100,98 @@ class App(ctk.CTk):
 
         ctk.CTkButton(dialog, text="Confirm Transfer", fg_color="#8b5cf6", hover_color="#7c3aed",
                       font=("Inter", 13, "bold"), command=confirm_transfer).pack(pady=10)
+
+    def open_inventory_dialog_for_categories(self):
+        """Hiển thị hộp thoại inventory của các category được chọn"""
+        if not self.selected_categories:
+            messagebox.showwarning("Warning", "Vui lòng chọn ít nhất một category (checkbox ✓)", parent=self)
+            return
+        
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Inventory by Category")
+        dialog.geometry("900x500")
+        dialog.attributes("-topmost", True)
+        
+        # Tổng hợp inventory của các category được chọn
+        all_inventory = []
+        for cat_id in self.selected_categories:
+            products = [p for p in self.service.products_map.values() 
+                       if str(p.category_id) == str(cat_id)]
+            for prod in products:
+                inv_items = self.service.load_product_inventory(prod.id)
+                all_inventory.extend(inv_items if inv_items else [])
+        
+        if not all_inventory:
+            ctk.CTkLabel(dialog, text="No inventory found for selected categories", 
+                        font=("Inter", 12)).pack(pady=20)
+            return
+        
+        # Treeview để hiển thị inventory
+        cols = ("ID", "Product", "Batch", "Quantity", "Location", "Exp Date", "Status")
+        tree = ttk.Treeview(dialog, columns=cols, show="headings", height=20)
+        for col in cols:
+            tree.heading(col, text=col.upper())
+            tree.column(col, anchor="center" if col not in ("Product", "Location") else "w", width=100)
+        tree.tag_configure("instock", foreground="#0f766e", background="#ecfdf5")
+        tree.tag_configure("lowstock", foreground="#78350f", background="#fef3c7")
+        tree.tag_configure("expired", foreground="#7f1d1d", background="#fee2e2")
+        tree.tag_configure("expiring", foreground="#9a3412", background="#ffedd5")
+        tree.tag_configure("warning", foreground="#92400e", background="#fef9c3")
+        
+        # Thêm data
+        low_stock_threshold = self.service.settings.get("low_stock_threshold", 10)
+        for inv in all_inventory:
+            prod_name = getattr(self.service.products_map.get(inv.product_id), 'name', inv.product_id)
+            status_text, status_tag = self._format_inventory_status_and_tag(inv, low_stock_threshold)
+            loc = f"🏪 {inv.store_id}" if inv.store_id else f"🏢 {inv.warehouse_id}"
+            tree.insert("", "end", values=(inv.id, prod_name, inv.batch_id, inv.quantity, loc, inv.exp_date, status_text), tags=(status_tag,))
+        
+        tree.pack(fill="both", expand=True, padx=10, pady=10)
+
+    def open_inventory_dialog_for_products(self):
+        """Hiển thị hộp thoại inventory của các product được chọn"""
+        if not self.selected_products:
+            messagebox.showwarning("Warning", "Vui lòng chọn ít nhất một product (checkbox ✓)", parent=self)
+            return
+        
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Inventory by Product")
+        dialog.geometry("900x500")
+        dialog.attributes("-topmost", True)
+        
+        # Tổng hợp inventory của các product được chọn
+        all_inventory = []
+        for prod_id in self.selected_products:
+            inv_items = self.service.load_product_inventory(prod_id)
+            all_inventory.extend(inv_items if inv_items else [])
+        
+        if not all_inventory:
+            ctk.CTkLabel(dialog, text="No inventory found for selected products", 
+                        font=("Inter", 12)).pack(pady=20)
+            return
+        
+        # Treeview để hiển thị inventory
+        cols = ("ID", "Product", "Batch", "Quantity", "Location", "Exp Date", "Status")
+        tree = ttk.Treeview(dialog, columns=cols, show="headings", height=20)
+        for col in cols:
+            tree.heading(col, text=col.upper())
+            tree.column(col, anchor="center" if col not in ("Product", "Location") else "w", width=100)
+        tree.tag_configure("instock", foreground="#0f766e", background="#ecfdf5")
+        tree.tag_configure("lowstock", foreground="#78350f", background="#fef3c7")
+        tree.tag_configure("expired", foreground="#7f1d1d", background="#fee2e2")
+        tree.tag_configure("expiring", foreground="#9a3412", background="#ffedd5")
+        tree.tag_configure("warning", foreground="#92400e", background="#fef9c3")
+        
+        # Thêm data
+        low_stock_threshold = self.service.settings.get("low_stock_threshold", 10)
+        for inv in all_inventory:
+            prod_name = getattr(self.service.products_map.get(inv.product_id), 'name', inv.product_id)
+            status_text, status_tag = self._format_inventory_status_and_tag(inv, low_stock_threshold)
+            loc = f"🏪 {inv.store_id}" if inv.store_id else f"🏢 {inv.warehouse_id}"
+            tree.insert("", "end", values=(inv.id, prod_name, inv.batch_id, inv.quantity, loc, inv.exp_date, status_text), tags=(status_tag,))
+        
+        tree.pack(fill="both", expand=True, padx=10, pady=10)
+    
     # UNDO / REDO
     # ==========================================
     def do_undo(self):
@@ -946,7 +1199,7 @@ class App(ctk.CTk):
             return
         desc = self.history.peek_undo()
         try:
-            self.history.undo(self.service, self.cursor, self.conn)
+            self.history.undo(self.service)
             self.build_kpi_cards()
             self.refresh_table()
             self._update_undo_redo_buttons()
@@ -959,7 +1212,7 @@ class App(ctk.CTk):
             return
         desc = self.history.peek_redo()
         try:
-            self.history.redo(self.service, self.cursor, self.conn)
+            self.history.redo(self.service)
             self.build_kpi_cards()
             self.refresh_table()
             self._update_undo_redo_buttons()

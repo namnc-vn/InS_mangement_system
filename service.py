@@ -183,23 +183,32 @@ class InventoryBST:
 # 5. SERVICE — Lớp nghiệp vụ chính
 # ==========================================
 class Service:
-    def __init__(self):
+    def __init__(self, conn=None):
+        # --- Database connection ---
+        self.conn = conn
+        self.cursor = conn.cursor() if conn is not None else None
+
         # --- Hash Maps (O(1) lookup) ---
         self.categories_map = {}
         self.products_map = {}
-        self.inventory_map = {}
+        self.inventory_map = {}              # Temporary cache: chỉ load khi cần
         self.inventory_composite_map = {}   # Composite key → chống trùng lô hàng
         self.warehouses_map = {}
         self.stores_map = {}
 
         # --- DSA nâng cao ---
-        self.qty_bst = InventoryBST()           # BST range search
+        self.qty_bst = InventoryBST()           # BST range search (chỉ cho loaded items)
         self.product_id_trie = Trie()           # Autocomplete Product ID
         self.batch_id_trie = Trie()             # Autocomplete Batch ID
         self.product_name_trie = ProductTrie()  # Search sản phẩm theo tên
 
         # --- Deque: Lịch sử 5 sản phẩm vừa xem (LRU Cache đơn giản) ---
         self.recently_viewed = deque(maxlen=5)
+
+        # --- Lazy Loading Cache ---
+        self.loaded_product_inventories = {}    # {product_id: [InventoryItem]} - cache tạm thời
+        self.low_stock_summary = {}             # {product_id: total_quantity} - aggregate
+        self.expiring_summary = {}              # {product_id: count_expiring_batches} - aggregate
 
         self.settings = {
             "low_stock_threshold": 15,
@@ -209,52 +218,70 @@ class Service:
     # =========================================================================
     # TẢI DỮ LIỆU
     # =========================================================================
-    def load_data(self, cursor):
-        """Nạp toàn bộ DB vào RAM — Cache để tăng tốc truy xuất"""
+    def load_data(self):
+        """Nạp dữ liệu với lazy loading — chỉ aggregate data để tiết kiệm RAM"""
+        if self.cursor is None:
+            raise ValueError("Service has no database cursor")
+
         self.categories_map.clear()
         self.products_map.clear()
-        self.inventory_map.clear()
+        self.inventory_map.clear()  # Không load inventory items nữa
         self.inventory_composite_map.clear()
         self.warehouses_map.clear()
         self.stores_map.clear()
-        self.qty_bst = InventoryBST()
+        self.qty_bst = InventoryBST()  # Sẽ load on-demand
         self.product_id_trie = Trie()
         self.batch_id_trie = Trie()
         self.product_name_trie = ProductTrie()
+        self.loaded_product_inventories.clear()
+        self.low_stock_summary.clear()
+        self.expiring_summary.clear()
 
-        cursor.execute("SELECT * FROM categories")
-        for row in cursor.fetchall():
+        # Load categories
+        self.cursor.execute("SELECT * FROM categories")
+        for row in self.cursor.fetchall():
             cat = Category(row[0], row[1])
             self.categories_map[cat.id] = cat
 
-        cursor.execute("SELECT * FROM products")
-        for row in cursor.fetchall():
-            prod = Product(*row)
+        # Load products với aggregate data
+        self.cursor.execute("""
+            SELECT p.*, 
+                   COALESCE(SUM(i.quantity), 0) as total_quantity,
+                   CASE WHEN MIN(DATEDIFF(i.exp_date, CURDATE())) <= %s THEN 1 ELSE 0 END as has_expiring,
+                   CASE WHEN COALESCE(SUM(i.quantity), 0) <= %s THEN 1 ELSE 0 END as has_low_stock
+            FROM products p
+            LEFT JOIN inventory i ON p.id = i.product_id
+            GROUP BY p.id
+        """, (self.settings["expiring_days_threshold"], self.settings["low_stock_threshold"]))
+
+        for row in self.cursor.fetchall():
+            prod = Product(row[0], row[1], row[2], row[3], row[4], row[5], bool(row[6]), bool(row[7]))
             self.products_map[prod.id] = prod
             self.product_id_trie.insert(prod.id)
             self.product_name_trie.insert(prod.name, prod.id)
 
-        cursor.execute("SELECT * FROM inventory")
-        for row in cursor.fetchall():
-            item = InventoryItem(*row)
-            self.inventory_map[item.id] = item
-            comp_key = (item.product_id, item.batch_id,
-                        str(item.mfg_date), str(item.exp_date), item.warehouse_id, item.store_id)
-            self.inventory_composite_map[comp_key] = item
-            self.qty_bst.insert(item.quantity, item)
-            self.batch_id_trie.insert(item.batch_id)
+            # Lưu aggregate cho warnings
+            self.low_stock_summary[prod.id] = prod.total_quantity
+            if prod.has_expiring:
+                # Đếm số lô sắp hết hạn cho sản phẩm này
+                self.cursor.execute("""
+                    SELECT COUNT(*) FROM inventory 
+                    WHERE product_id = %s AND DATEDIFF(exp_date, CURDATE()) <= %s
+                """, (prod.id, self.settings["expiring_days_threshold"]))
+                self.expiring_summary[prod.id] = self.cursor.fetchone()[0]
 
+        # Load warehouses và stores (không thay đổi)
         try:
-            cursor.execute("SELECT * FROM warehouses")
-            for row in cursor.fetchall():
+            self.cursor.execute("SELECT * FROM warehouses")
+            for row in self.cursor.fetchall():
                 wh = Warehouse(row[0], row[1], row[2])
                 self.warehouses_map[wh.id] = wh
         except Exception:
             pass  # Bảng warehouses chưa tồn tại thì bỏ qua
 
         try:
-            cursor.execute("SELECT * FROM stores")
-            for row in cursor.fetchall():
+            self.cursor.execute("SELECT * FROM stores")
+            for row in self.cursor.fetchall():
                 st = Store(row[0], row[1], row[2])
                 self.stores_map[st.id] = st
         except Exception:
@@ -277,12 +304,14 @@ class Service:
     def generate_category_id(self):
         return self._get_next_id(self.categories_map, "C")
 
-    def add_category(self, id, name, cursor, conn):
+    def add_category(self, id, name):
         """Thêm danh mục mới — kiểm tra trùng ID bằng Hash Map O(1)"""
+        if self.cursor is None or self.conn is None:
+            raise ValueError("Service has no database connection")
         if id in self.categories_map:
             return False
-        cursor.execute("INSERT INTO categories (id, name) VALUES (%s, %s)", (id, name))
-        conn.commit()
+        self.cursor.execute("INSERT INTO categories (id, name) VALUES (%s, %s)", (id, name))
+        self.conn.commit()
         self.categories_map[id] = Category(id, name)
         return True
 
@@ -296,15 +325,17 @@ class Service:
         """Kiểm tra sản phẩm tồn tại — O(1)"""
         return self.products_map.get(product_id, None)
 
-    def add_product(self, prod_id, name, category_id, price, status, cursor, conn):
+    def add_product(self, prod_id, name, category_id, price, status):
         """Thêm sản phẩm mới + cập nhật Trie"""
+        if self.cursor is None or self.conn is None:
+            raise ValueError("Service has no database connection")
         if prod_id in self.products_map:
             return False
-        cursor.execute(
+        self.cursor.execute(
             "INSERT INTO products (id, name, category_id, price, status) VALUES (%s, %s, %s, %s, %s)",
             (prod_id, name, category_id, price, status)
         )
-        conn.commit()
+        self.conn.commit()
         new_prod = Product(prod_id, name, category_id, price, status)
         self.products_map[prod_id] = new_prod
         self.product_id_trie.insert(prod_id)
@@ -323,6 +354,74 @@ class Service:
     def show_products(self):
         return list(self.products_map.values())
 
+    # =========================================================================
+    # LAZY LOADING INVENTORY
+    # =========================================================================
+    def load_product_inventory(self, product_id):
+        """Lazy load inventory items cho một sản phẩm cụ thể"""
+        if self.cursor is None:
+            raise ValueError("Service has no database cursor")
+        if product_id in self.loaded_product_inventories:
+            return self.loaded_product_inventories[product_id]
+
+        # Query DB để load inventory cho product này
+        self.cursor.execute("SELECT * FROM inventory WHERE product_id = %s", (product_id,))
+        items = []
+        for row in self.cursor.fetchall():
+            item = InventoryItem(*row)
+            items.append(item)
+            # Thêm vào global inventory_map (temporary)
+            self.inventory_map[item.id] = item
+            comp_key = (item.product_id, item.batch_id,
+                        str(item.mfg_date), str(item.exp_date), item.warehouse_id, item.store_id)
+            self.inventory_composite_map[comp_key] = item
+            # Thêm vào BST và Trie
+            self.qty_bst.insert(item.quantity, item)
+            self.batch_id_trie.insert(item.batch_id)
+
+        self.loaded_product_inventories[product_id] = items
+        return items
+
+    def update_product_aggregates(self, product_id):
+        """Cập nhật aggregate data cho một sản phẩm sau khi thay đổi inventory"""
+        if self.cursor is None:
+            raise ValueError("Service has no database cursor")
+        self.cursor.execute("""
+            SELECT 
+                COALESCE(SUM(quantity), 0) as total_quantity,
+                CASE WHEN MIN(DATEDIFF(exp_date, CURDATE())) <= %s THEN 1 ELSE 0 END as has_expiring,
+                CASE WHEN COALESCE(SUM(quantity), 0) <= %s THEN 1 ELSE 0 END as has_low_stock
+            FROM inventory 
+            WHERE product_id = %s
+        """, (self.settings["expiring_days_threshold"], self.settings["low_stock_threshold"], product_id))
+        
+        row = self.cursor.fetchone()
+        if row:
+            product = self.products_map.get(product_id)
+            if product:
+                product.total_quantity = row[0]
+                product.has_expiring = bool(row[1])
+                product.has_low_stock = bool(row[2])
+                
+                self.low_stock_summary[product_id] = row[0]
+                if bool(row[1]):
+                    # Đếm số lô expiring
+                    cursor.execute("""
+                        SELECT COUNT(*) FROM inventory 
+                        WHERE product_id = %s AND DATEDIFF(exp_date, CURDATE()) <= %s
+                    """, (product_id, self.settings["expiring_days_threshold"]))
+                    self.expiring_summary[product_id] = cursor.fetchone()[0]
+                else:
+                    self.expiring_summary[product_id] = 0
+
+    def clear_inventory_cache(self):
+        """Xóa temporary cache để tiết kiệm RAM"""
+        self.inventory_map.clear()
+        self.inventory_composite_map.clear()
+        self.qty_bst = InventoryBST()
+        self.batch_id_trie = Trie()
+        self.loaded_product_inventories.clear()
+
     def search_products_by_name(self, prefix):
         """Tìm kiếm theo tên bằng ProductTrie — O(L + DFS)"""
         if not prefix.strip():
@@ -338,26 +437,45 @@ class Service:
     # INVENTORY
     # =========================================================================
     def check_item_exist(self, product_id, batch_id, mfg_date, exp_date, warehouse_id, store_id=None):
-        """Kiểm tra lô hàng đã tồn tại bằng Composite Key — O(1)"""
+        """Kiểm tra lô hàng đã tồn tại bằng Composite Key — O(1) hoặc DB lookup nếu chưa cache"""
         comp_key = (product_id, batch_id, str(mfg_date), str(exp_date), warehouse_id, store_id)
-        return self.inventory_composite_map.get(comp_key, None)
+        if comp_key in self.inventory_composite_map:
+            return self.inventory_composite_map[comp_key]
+        if self.cursor is None:
+            return None
+        self.cursor.execute(
+            "SELECT * FROM inventory WHERE product_id=%s AND batch_id=%s AND mfg_date=%s AND exp_date=%s AND warehouse_id=%s AND store_id=%s",
+            (product_id, batch_id, mfg_date, exp_date, warehouse_id, store_id)
+        )
+        row = self.cursor.fetchone()
+        if not row:
+            return None
+        item = InventoryItem(*row)
+        self.inventory_map[item.id] = item
+        self.inventory_composite_map[comp_key] = item
+        self.batch_id_trie.insert(batch_id)
+        return item
 
-    def add_inventory_item(self, product_id, quantity, batch_id, mfg_date, exp_date, warehouse_id, cursor, conn, store_id=None):
+    def add_inventory_item(self, product_id, quantity, batch_id, mfg_date, exp_date, warehouse_id, store_id=None):
+        if self.cursor is None or self.conn is None:
+            raise ValueError("Service has no database connection")
         existing = self.check_item_exist(product_id, batch_id, mfg_date, exp_date, warehouse_id, store_id)
         if existing:
             existing.quantity += int(quantity)
-            cursor.execute("UPDATE inventory SET quantity = %s WHERE id = %s",
+            self.cursor.execute("UPDATE inventory SET quantity = %s WHERE id = %s",
                            (existing.quantity, existing.id))
-            conn.commit()
+            self.conn.commit()
+            # Cập nhật aggregate data
+            self.update_product_aggregates(product_id)
             return True, existing.id
         else:
-            cursor.execute(
+            self.cursor.execute(
                 "INSERT INTO inventory (product_id, batch_id, mfg_date, exp_date, quantity, warehouse_id, store_id) "
                 "VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 (product_id, batch_id, mfg_date, exp_date, quantity, warehouse_id, store_id)
             )
-            conn.commit()
-            item_id = cursor.lastrowid
+            self.conn.commit()
+            item_id = self.cursor.lastrowid
             new_item = InventoryItem(item_id, product_id, batch_id, mfg_date,
                                      exp_date, int(quantity), warehouse_id, store_id)
             self.inventory_map[item_id] = new_item
@@ -365,10 +483,17 @@ class Service:
             self.inventory_composite_map[comp_key] = new_item
             self.qty_bst.insert(int(quantity), new_item)
             self.batch_id_trie.insert(batch_id)
+            # Cập nhật aggregate data
+            self.update_product_aggregates(product_id)
             return True, item_id
 
     def find_inventory_by_product_id(self, product_id):
-        return [item for item in self.inventory_map.values() if item.product_id == product_id]
+        if product_id not in self.loaded_product_inventories:
+            try:
+                self.load_product_inventory(product_id)
+            except ValueError:
+                pass
+        return self.loaded_product_inventories.get(product_id, [])
 
     def show_inventory(self):
         return list(self.inventory_map.values())
@@ -379,12 +504,14 @@ class Service:
     def generate_warehouse_id(self):
         return self._get_next_id(self.warehouses_map, "WH-")
 
-    def add_warehouse(self, wh_id, name, space, cursor, conn):
+    def add_warehouse(self, wh_id, name, space):
+        if self.cursor is None or self.conn is None:
+            raise ValueError("Service has no database connection")
         if wh_id in self.warehouses_map:
             return False
-        cursor.execute("INSERT INTO warehouses (id, name, space) VALUES (%s, %s, %s)",
+        self.cursor.execute("INSERT INTO warehouses (id, name, space) VALUES (%s, %s, %s)",
                        (wh_id, name, space))
-        conn.commit()
+        self.conn.commit()
         self.warehouses_map[wh_id] = Warehouse(wh_id, name, space)
         return True
 
@@ -406,12 +533,14 @@ class Service:
     def generate_store_id(self):
         return self._get_next_id(self.stores_map, "ST-")
 
-    def add_store(self, store_id, name, location, cursor, conn):
+    def add_store(self, store_id, name, location):
+        if self.cursor is None or self.conn is None:
+            raise ValueError("Service has no database connection")
         if store_id in self.stores_map:
             return False
-        cursor.execute("INSERT INTO stores (id, name, location) VALUES (%s, %s, %s)",
+        self.cursor.execute("INSERT INTO stores (id, name, location) VALUES (%s, %s, %s)",
                        (store_id, name, location))
-        conn.commit()
+        self.conn.commit()
         self.stores_map[store_id] = Store(store_id, name, location)
         return True
 
@@ -426,8 +555,10 @@ class Service:
                 summary[st_id]["total_qty"] += inv.quantity
         return summary
 
-    def transfer_inventory(self, item_id, target_store_id, transfer_qty, cursor, conn):
+    def transfer_inventory(self, item_id, target_store_id, transfer_qty):
         """Chuyển số lượng từ lô hàng trong Warehouse sang Store"""
+        if self.cursor is None or self.conn is None:
+            raise ValueError("Service has no database connection")
         source_item = self.inventory_map.get(item_id)
         if not source_item or source_item.quantity < transfer_qty:
             return False, "Not enough quantity"
@@ -435,18 +566,18 @@ class Service:
         # 1. Trừ số lượng kho (nếu = 0 thì xóa trong service, DB thì delete)
         source_item.quantity -= transfer_qty
         if source_item.quantity > 0:
-            cursor.execute("UPDATE inventory SET quantity = %s WHERE id = %s", (source_item.quantity, item_id))
+            self.cursor.execute("UPDATE inventory SET quantity = %s WHERE id = %s", (source_item.quantity, item_id))
         else:
-            cursor.execute("DELETE FROM inventory WHERE id = %s", (item_id,))
+            self.cursor.execute("DELETE FROM inventory WHERE id = %s", (item_id,))
             self.inventory_map.pop(item_id)
             comp_key = (source_item.product_id, source_item.batch_id, str(source_item.mfg_date), str(source_item.exp_date), source_item.warehouse_id, source_item.store_id)
             self.inventory_composite_map.pop(comp_key, None)
-        conn.commit()
+        self.conn.commit()
 
         # 2. Thêm vào cửa hàng
         _, target_item_id = self.add_inventory_item(
             source_item.product_id, transfer_qty, source_item.batch_id, 
-            source_item.mfg_date, source_item.exp_date, None, cursor, conn, store_id=target_store_id
+            source_item.mfg_date, source_item.exp_date, None, store_id=target_store_id
         )
         return True, target_item_id
 
@@ -454,16 +585,9 @@ class Service:
     # ALERTS — Heap-based
     # =========================================================================
     def get_low_stock_warnings(self, threshold=50):
-        """Cảnh báo sắp hết hàng — Min-Heap O(n log k)"""
-        stock_summary = {}
-        for item in self.inventory_map.values():
-            stock_summary[item.product_id] = stock_summary.get(item.product_id, 0) + item.quantity
-        for prod_id in self.products_map.keys():
-            if prod_id not in stock_summary:
-                stock_summary[prod_id] = 0
-
+        """Cảnh báo sắp hết hàng — dùng aggregate data O(n log k)"""
         min_heap = []
-        for prod_id, total_qty in stock_summary.items():
+        for prod_id, total_qty in self.low_stock_summary.items():
             if total_qty <= threshold:
                 heapq.heappush(min_heap, (total_qty, prod_id))
 
@@ -475,17 +599,25 @@ class Service:
         return warnings
 
     def get_expiring_soon_warnings(self, days_threshold=30):
-        """Cảnh báo sắp hết hạn — Min-Heap O(n log k)"""
+        """Cảnh báo sắp hết hạn — lazy load inventory cho sản phẩm có expiring"""
+        if self.cursor is None:
+            return []
+
         today = date.today()
         min_heap = []
-        for item in self.inventory_map.values():
-            if isinstance(item.exp_date, str):
-                exp_obj = datetime.strptime(item.exp_date, "%Y-%m-%d").date()
-            else:
-                exp_obj = item.exp_date
-            days_left = (exp_obj - today).days
-            if days_left <= days_threshold:
-                heapq.heappush(min_heap, (days_left, item.id, item))
+
+        # Load inventory cho các sản phẩm có expiring
+        for prod_id, expiring_count in self.expiring_summary.items():
+            if expiring_count > 0:
+                items = self.load_product_inventory(prod_id)
+                for item in items:
+                    if isinstance(item.exp_date, str):
+                        exp_obj = datetime.strptime(item.exp_date, "%Y-%m-%d").date()
+                    else:
+                        exp_obj = item.exp_date
+                    days_left = (exp_obj - today).days
+                    if days_left <= days_threshold:
+                        heapq.heappush(min_heap, (days_left, item.id, item))
 
         warnings = []
         while min_heap:
@@ -503,28 +635,44 @@ class Service:
         return warnings
 
     def get_low_stock_items(self):
-        """Lấy danh sách lô hàng thấp — dùng cho GUI"""
+        """Lấy danh sách lô hàng thấp — lazy load"""
+        if self.cursor is None:
+            return []
         threshold = self.settings["low_stock_threshold"]
         min_heap = []
-        for inv in self.inventory_map.values():
-            if inv.quantity <= threshold:
-                heapq.heappush(min_heap, (inv.quantity, inv.id, inv))
+
+        # Load inventory cho các sản phẩm có low stock
+        for prod_id, total_qty in self.low_stock_summary.items():
+            if total_qty <= threshold:
+                items = self.load_product_inventory(prod_id)
+                for inv in items:
+                    if inv.quantity <= threshold:
+                        heapq.heappush(min_heap, (inv.quantity, inv.id, inv))
+
         return [heapq.heappop(min_heap)[2] for _ in range(len(min_heap))]
 
     def get_expiring_items(self):
-        """Lấy danh sách lô sắp hết hạn — dùng cho GUI"""
+        """Lấy danh sách lô sắp hết hạn — lazy load"""
+        if self.cursor is None:
+            return []
         threshold = self.settings["expiring_days_threshold"]
         today = date.today()
         min_heap = []
-        for inv in self.inventory_map.values():
-            try:
-                exp = (datetime.strptime(str(inv.exp_date), "%Y-%m-%d").date()
-                       if isinstance(inv.exp_date, str) else inv.exp_date)
-                days_left = (exp - today).days
-                if days_left <= threshold:
-                    heapq.heappush(min_heap, (days_left, inv.id, inv))
-            except Exception:
-                pass
+
+        # Load inventory cho các sản phẩm có expiring
+        for prod_id, expiring_count in self.expiring_summary.items():
+            if expiring_count > 0:
+                items = self.load_product_inventory(prod_id)
+                for inv in items:
+                    try:
+                        exp = (datetime.strptime(str(inv.exp_date), "%Y-%m-%d").date()
+                               if isinstance(inv.exp_date, str) else inv.exp_date)
+                        days_left = (exp - today).days
+                        if days_left <= threshold:
+                            heapq.heappush(min_heap, (days_left, inv.id, inv))
+                    except Exception:
+                        pass
+
         return [heapq.heappop(min_heap)[2] for _ in range(len(min_heap))]
 
     # =========================================================================
@@ -572,10 +720,12 @@ class Service:
     # =========================================================================
 
     # --- INVENTORY ---
-    def remove_inventory_item(self, item_id, cursor, conn):
+    def remove_inventory_item(self, item_id):
         """Xóa lô hàng khỏi DB và cập nhật RAM — dùng cho Undo AddInventory"""
-        cursor.execute("DELETE FROM inventory WHERE id=%s", (item_id,))
-        conn.commit()
+        if self.cursor is None or self.conn is None:
+            raise ValueError("Service has no database connection")
+        self.cursor.execute("DELETE FROM inventory WHERE id=%s", (item_id,))
+        self.conn.commit()
         item = self.inventory_map.pop(item_id, None)
         if item:
             comp_key = (item.product_id, item.batch_id,
@@ -584,14 +734,16 @@ class Service:
         return item
 
     def restore_inventory_item(self, item_id, product_id, batch_id,
-                               mfg_date, exp_date, quantity, warehouse_id, cursor, conn, store_id=None):
+                               mfg_date, exp_date, quantity, warehouse_id, store_id=None):
         """Chèn lại lô hàng với ID cũ — dùng cho Redo AddInventory"""
-        cursor.execute(
+        if self.cursor is None or self.conn is None:
+            raise ValueError("Service has no database connection")
+        self.cursor.execute(
             "INSERT INTO inventory (id, product_id, batch_id, mfg_date, exp_date, quantity, warehouse_id, store_id) "
             "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
             (item_id, product_id, batch_id, mfg_date, exp_date, quantity, warehouse_id, store_id)
         )
-        conn.commit()
+        self.conn.commit()
         new_item = InventoryItem(item_id, product_id, batch_id,
                                   mfg_date, exp_date, quantity, warehouse_id, store_id)
         self.inventory_map[item_id] = new_item
@@ -599,75 +751,93 @@ class Service:
         self.inventory_composite_map[comp_key] = new_item
         self.qty_bst.insert(quantity, new_item)
 
-    def update_inventory_quantity(self, item_id, new_quantity, cursor, conn):
+    def update_inventory_quantity(self, item_id, new_quantity):
         """Cập nhật số lượng một lô hàng — dùng cho Undo/Redo UpdateQty"""
+        if self.cursor is None or self.conn is None:
+            raise ValueError("Service has no database connection")
         item = self.inventory_map.get(item_id)
         if item:
             item.quantity = new_quantity
-            cursor.execute("UPDATE inventory SET quantity=%s WHERE id=%s",
+            self.cursor.execute("UPDATE inventory SET quantity=%s WHERE id=%s",
                            (new_quantity, item_id))
-            conn.commit()
+            self.conn.commit()
             return True
         return False
 
     # --- PRODUCT ---
-    def remove_product(self, prod_id, cursor, conn):
+    def remove_product(self, prod_id):
         """Xóa sản phẩm khỏi DB và RAM — dùng cho Undo AddProduct"""
-        cursor.execute("DELETE FROM products WHERE id=%s", (prod_id,))
-        conn.commit()
+        if self.cursor is None or self.conn is None:
+            raise ValueError("Service has no database connection")
+        self.cursor.execute("DELETE FROM products WHERE id=%s", (prod_id,))
+        self.conn.commit()
         self.products_map.pop(prod_id, None)
 
-    def restore_product(self, prod_id, name, category_id, price, status, cursor, conn):
+    def restore_product(self, prod_id, name, category_id, price, status):
         """Chèn lại sản phẩm — dùng cho Redo AddProduct"""
-        cursor.execute(
+        if self.cursor is None or self.conn is None:
+            raise ValueError("Service has no database connection")
+        self.cursor.execute(
             "INSERT INTO products (id, name, category_id, price, status) VALUES (%s,%s,%s,%s,%s)",
             (prod_id, name, category_id, price, status)
         )
-        conn.commit()
+        self.conn.commit()
         new_prod = Product(prod_id, name, category_id, price, status)
         self.products_map[prod_id] = new_prod
         self.product_id_trie.insert(prod_id)
         self.product_name_trie.insert(name, prod_id)
 
     # --- CATEGORY ---
-    def remove_category(self, cat_id, cursor, conn):
+    def remove_category(self, cat_id):
         """Xóa danh mục khỏi DB và RAM — dùng cho Undo AddCategory"""
-        cursor.execute("DELETE FROM categories WHERE id=%s", (cat_id,))
-        conn.commit()
+        if self.cursor is None or self.conn is None:
+            raise ValueError("Service has no database connection")
+        self.cursor.execute("DELETE FROM categories WHERE id=%s", (cat_id,))
+        self.conn.commit()
         self.categories_map.pop(cat_id, None)
 
-    def restore_category(self, cat_id, name, cursor, conn):
+    def restore_category(self, cat_id, name):
         """Chèn lại danh mục — dùng cho Redo AddCategory"""
-        cursor.execute("INSERT INTO categories (id, name) VALUES (%s,%s)", (cat_id, name))
-        conn.commit()
+        if self.cursor is None or self.conn is None:
+            raise ValueError("Service has no database connection")
+        self.cursor.execute("INSERT INTO categories (id, name) VALUES (%s,%s)", (cat_id, name))
+        self.conn.commit()
         self.categories_map[cat_id] = Category(cat_id, name)
 
     # --- WAREHOUSE ---
-    def remove_warehouse(self, wh_id, cursor, conn):
+    def remove_warehouse(self, wh_id):
         """Xóa kho khỏi DB và RAM — dùng cho Undo AddWarehouse"""
-        cursor.execute("DELETE FROM warehouses WHERE id=%s", (wh_id,))
-        conn.commit()
+        if self.cursor is None or self.conn is None:
+            raise ValueError("Service has no database connection")
+        self.cursor.execute("DELETE FROM warehouses WHERE id=%s", (wh_id,))
+        self.conn.commit()
         self.warehouses_map.pop(wh_id, None)
 
-    def restore_warehouse(self, wh_id, name, space, cursor, conn):
+    def restore_warehouse(self, wh_id, name, space):
         """Chèn lại kho — dùng cho Redo AddWarehouse"""
-        cursor.execute("INSERT INTO warehouses (id, name, space) VALUES (%s,%s,%s)",
+        if self.cursor is None or self.conn is None:
+            raise ValueError("Service has no database connection")
+        self.cursor.execute("INSERT INTO warehouses (id, name, space) VALUES (%s,%s,%s)",
                        (wh_id, name, space))
-        conn.commit()
+        self.conn.commit()
         self.warehouses_map[wh_id] = Warehouse(wh_id, name, space)
 
     # --- STORE ---
-    def remove_store(self, store_id, cursor, conn):
+    def remove_store(self, store_id):
         """Xóa kho khỏi DB và RAM — dùng cho Undo AddStore"""
-        cursor.execute("DELETE FROM stores WHERE id=%s", (store_id,))
-        conn.commit()
+        if self.cursor is None or self.conn is None:
+            raise ValueError("Service has no database connection")
+        self.cursor.execute("DELETE FROM stores WHERE id=%s", (store_id,))
+        self.conn.commit()
         self.stores_map.pop(store_id, None)
 
-    def restore_store(self, store_id, name, location, cursor, conn):
+    def restore_store(self, store_id, name, location):
         """Chèn lại cửa hàng — dùng cho Redo AddStore"""
-        cursor.execute("INSERT INTO stores (id, name, location) VALUES (%s,%s,%s)",
+        if self.cursor is None or self.conn is None:
+            raise ValueError("Service has no database connection")
+        self.cursor.execute("INSERT INTO stores (id, name, location) VALUES (%s,%s,%s)",
                        (store_id, name, location))
-        conn.commit()
+        self.conn.commit()
         self.stores_map[store_id] = Store(store_id, name, location)
 
     def get_kpi_stats(self):
