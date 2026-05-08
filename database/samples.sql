@@ -1,113 +1,113 @@
 ALTER USER 'root'@'localhost' IDENTIFIED BY '123456';
 
+-- =========================
+-- SAMPLE DATA FOR ins_db
+-- =========================
+
 USE ins_db;
 
--- ==========================================
--- 1. INSERT CATEGORIES (5 Categories)
--- ==========================================
-INSERT INTO categories (id, name) VALUES 
-('C01', 'Electronics'),
-('C02', 'Groceries'),
-('C03', 'Clothing & Apparel'),
-('C04', 'Home Appliances'),
-('C05', 'Toys & Games');
+-- =========================
+-- 1. Categories
+-- =========================
+INSERT INTO categories VALUES
+('C001', 'Beverages'),
+('C002', 'Snacks'),
+('C003', 'Dairy'),
+('C004', 'Frozen Food'),
+('C005', 'Personal Care'),
+('C006', 'Household'),
+('C007', 'Instant Food'),
+('C008', 'Bakery');
 
--- ==========================================
--- 2. INSERT WAREHOUSES (3 Warehouses)
--- Phải INSERT trước inventory vì có FK constraint
--- ==========================================
-INSERT INTO warehouses (id, name, space) VALUES
-('WH-A', 'Main Warehouse A',  5000),
-('WH-B', 'Warehouse B',       3000),
-('WH-C', 'Cold Storage C',    1500);
+-- =========================
+-- 2. Warehouses
+-- =========================
+INSERT INTO warehouses VALUES
+('W001', 'Central Warehouse', 10000),
+('W002', 'North Warehouse', 7000),
+('W003', 'South Warehouse', 5000);
 
--- ==========================================
--- 2.1. INSERT STORES (2 Stores)
--- ==========================================
-INSERT INTO stores (id, name, location) VALUES
-('ST-01', 'Store Downtown', '123 Main St, City Center'),
-('ST-02', 'Store Uptown', '456 High St, North District');
+-- =========================
+-- 2.1 Stores
+-- =========================
+INSERT INTO stores VALUES
+('S001', 'District 1 Store', 'District 1, HCM City'),
+('S002', 'Thu Duc Store', 'Thu Duc, HCM City'),
+('S003', 'Binh Thanh Store', 'Binh Thanh, HCM City'),
+('S004', 'Go Vap Store', 'Go Vap, HCM City');
 
--- ==========================================
--- 3. INSERT PRODUCTS (20 Products)
--- ==========================================
-INSERT INTO products (id, name, category_id, price, status) VALUES 
--- Electronics (C01)
-('P001', 'Smartphone Pro Max',              'C01', 999.99, 'Available'),
-('P002', 'Gaming Laptop 15"',               'C01', 1499.50, 'Available'),
-('P003', 'Wireless Noise-Canceling Earbuds','C01', 199.00, 'Available'),
-('P004', 'Smartwatch Series 8',             'C01', 399.00, 'Out of Stock'),
+-- =========================
+-- 3. Products
+-- =========================
+INSERT INTO products VALUES
+('P001', 'Coca Cola 330ml', 'C001', 10.5, 'ACTIVE'),
+('P002', 'Pepsi 330ml', 'C001', 10.0, 'ACTIVE'),
+('P003', 'Orange Juice', 'C001', 18.0, 'ACTIVE'),
+('P004', 'Potato Chips BBQ', 'C002', 15.0, 'ACTIVE'),
+('P005', 'Salted Crackers', 'C002', 12.0, 'ACTIVE'),
+('P006', 'Fresh Milk 1L', 'C003', 32.0, 'ACTIVE'),
+('P007', 'Yogurt Strawberry', 'C003', 8.0, 'ACTIVE'),
+('P008', 'Ice Cream Vanilla', 'C004', 25.0, 'ACTIVE'),
+('P009', 'Frozen Dumplings', 'C004', 55.0, 'ACTIVE'),
+('P010', 'Shampoo Clear', 'C005', 75.0, 'ACTIVE'),
+('P011', 'Toothpaste P/S', 'C005', 28.0, 'ACTIVE'),
+('P012', 'Dishwashing Liquid', 'C006', 45.0, 'ACTIVE'),
+('P013', 'Laundry Detergent', 'C006', 120.0, 'ACTIVE'),
+('P014', 'Instant Noodles Beef', 'C007', 6.5, 'ACTIVE'),
+('P015', 'Instant Noodles Chicken', 'C007', 6.5, 'ACTIVE'),
+('P016', 'Bread Sandwich', 'C008', 14.0, 'ACTIVE'),
+('P017', 'Chocolate Cake', 'C008', 40.0, 'ACTIVE'),
+('P018', 'Mineral Water', 'C001', 7.0, 'ACTIVE'),
+('P019', 'Energy Drink', 'C001', 15.0, 'ACTIVE'),
+('P020', 'Cookies Butter', 'C002', 22.0, 'ACTIVE');
 
--- Groceries (C02)
-('P005', 'Organic Whole Milk 1L',    'C02', 3.50,  'Available'),
-('P006', 'Whole Wheat Bread',         'C02', 2.99,  'Available'),
-('P007', 'Fresh Apples (1kg)',        'C02', 4.50,  'Available'),
-('P008', '100% Orange Juice 2L',      'C02', 5.20,  'Available'),
-('P009', 'Arabica Coffee Beans 500g', 'C02', 12.99, 'Available'),
+-- =========================
+-- 4. Batch
+-- =========================
+INSERT INTO batch VALUES
+-- Warehouse batches
+('B001', 'P001', '2026-01-01', '2027-01-01', '2026-01-05', 500, 'W001', NULL),
+('B002', 'P002', '2026-01-10', '2027-01-10', '2026-01-12', 450, 'W001', NULL),
+('B003', 'P003', '2026-02-01', '2026-08-01', '2026-02-03', 300, 'W002', NULL),
+('B004', 'P004', '2026-03-01', '2026-09-01', '2026-03-05', 250, 'W002', NULL),
+('B005', 'P005', '2026-03-10', '2026-10-10', '2026-03-12', 280, 'W003', NULL),
+('B006', 'P006', '2026-04-01', '2026-05-15', '2026-04-02', 200, 'W001', NULL),
+('B007', 'P007', '2026-04-01', '2026-04-25', '2026-04-03', 350, 'W001', NULL),
+('B008', 'P008', '2026-02-15', '2026-12-15', '2026-02-18', 180, 'W003', NULL),
+('B009', 'P009', '2026-01-20', '2026-07-20', '2026-01-25', 150, 'W002', NULL),
+('B010', 'P010', '2026-01-01', '2028-01-01', '2026-01-10', 120, 'W001', NULL),
 
--- Clothing & Apparel (C03)
-('P010', 'Men Classic Cotton T-Shirt',  'C03', 15.00, 'Available'),
-('P011', 'Women Slim Fit Denim Jeans',  'C03', 45.00, 'Available'),
-('P012', 'Unisex Winter Jacket',        'C03', 89.99, 'Available'),
-('P013', 'Running Sneakers',            'C03', 65.50, 'Available'),
+('B011', 'P011', '2026-01-15', '2028-01-15', '2026-01-18', 140, 'W001', NULL),
+('B012', 'P012', '2026-02-01', '2028-02-01', '2026-02-05', 160, 'W002', NULL),
+('B013', 'P013', '2026-03-01', '2028-03-01', '2026-03-04', 110, 'W003', NULL),
+('B014', 'P014', '2026-04-01', '2026-10-01', '2026-04-02', 1000, 'W001', NULL),
+('B015', 'P015', '2026-04-01', '2026-10-01', '2026-04-02', 950, 'W001', NULL),
+('B016', 'P016', '2026-05-01', '2026-05-10', '2026-05-02', 100, 'W002', NULL),
+('B017', 'P017', '2026-05-01', '2026-05-15', '2026-05-03', 90, 'W002', NULL),
+('B018', 'P018', '2026-01-01', '2027-01-01', '2026-01-02', 800, 'W003', NULL),
+('B019', 'P019', '2026-02-01', '2027-02-01', '2026-02-05', 400, 'W003', NULL),
+('B020', 'P020', '2026-03-01', '2026-12-01', '2026-03-05', 220, 'W001', NULL),
 
--- Home Appliances (C04)
-('P014', 'Microwave Oven 800W',    'C04', 120.00, 'Available'),
-('P015', 'Robot Vacuum Cleaner',   'C04', 250.00, 'Available'),
-('P016', 'Air Purifier HEPA',      'C04', 180.00, 'Available'),
-('P017', 'High-Speed Blender',     'C04', 95.00,  'Out of Stock'),
+-- Store batches
+('B021', 'P001', '2026-01-01', '2027-01-01', '2026-04-01', 80, NULL, 'S001'),
+('B022', 'P002', '2026-01-10', '2027-01-10', '2026-04-01', 75, NULL, 'S001'),
+('B023', 'P004', '2026-03-01', '2026-09-01', '2026-04-02', 40, NULL, 'S001'),
+('B024', 'P006', '2026-04-01', '2026-05-15', '2026-04-10', 30, NULL, 'S002'),
+('B025', 'P007', '2026-04-01', '2026-04-25', '2026-04-11', 50, NULL, 'S002'),
+('B026', 'P010', '2026-01-01', '2028-01-01', '2026-04-12', 20, NULL, 'S003'),
+('B027', 'P011', '2026-01-15', '2028-01-15', '2026-04-12', 25, NULL, 'S003'),
+('B028', 'P014', '2026-04-01', '2026-10-01', '2026-04-15', 200, NULL, 'S004'),
+('B029', 'P015', '2026-04-01', '2026-10-01', '2026-04-15', 180, NULL, 'S004'),
+('B030', 'P018', '2026-01-01', '2027-01-01', '2026-04-18', 120, NULL, 'S001'),
 
--- Toys & Games (C05)
-('P018', 'Lego Star Wars Millennium Falcon', 'C05', 159.99, 'Available'),
-('P019', 'Marvel Action Figure Set',         'C05', 35.00,  'Available'),
-('P020', 'Monopoly Classic Board Game',      'C05', 20.00,  'Available');
-
--- ==========================================
--- 4. INSERT INVENTORY (30 Batches)
--- ==========================================
-INSERT INTO inventory (product_id, batch_id, mfg_date, exp_date, quantity, warehouse_id, store_id) VALUES 
--- Electronics
-('P001', 'BATCH-E01', '2023-10-01', '2028-10-01',  50, 'WH-A', NULL),
-('P001', 'BATCH-E02', '2023-11-15', '2028-11-15',  30, 'WH-B', NULL),
-('P002', 'BATCH-E01', '2023-09-20', '2028-09-20',  20, 'WH-A', NULL),
-('P003', 'BATCH-E03', '2023-12-05', '2026-12-05', 100, 'WH-A', NULL),
-
--- Groceries (hạn ngắn)
-('P005', 'BATCH-G01', '2024-03-01', '2024-03-15', 200, 'WH-C', NULL),
-('P005', 'BATCH-G02', '2024-03-10', '2024-03-25', 150, 'WH-C', NULL),
-('P006', 'BATCH-G01', '2024-03-12', '2024-03-19',  80, 'WH-C', NULL),
-('P007', 'BATCH-G03', '2024-03-05', '2024-03-20', 300, 'WH-C', NULL),
-('P008', 'BATCH-G04', '2023-10-10', '2024-10-10', 120, 'WH-C', NULL),
-('P009', 'BATCH-G05', '2024-01-15', '2025-01-15',  60, 'WH-A', NULL),
-('P009', 'BATCH-G06', '2024-02-01', '2025-02-01',  40, 'WH-B', NULL),
-
--- Clothing (hạn dài)
-('P010', 'BATCH-C01', '2023-05-10', '2030-05-10', 500, 'WH-B', NULL),
-('P010', 'BATCH-C02', '2023-08-15', '2030-08-15', 200, 'WH-A', NULL),
-('P011', 'BATCH-C01', '2023-06-20', '2030-06-20', 150, 'WH-B', NULL),
-('P012', 'BATCH-C03', '2023-09-01', '2030-09-01',  50, 'WH-B', NULL),
-('P013', 'BATCH-C04', '2023-11-11', '2028-11-11', 120, 'WH-A', NULL),
-
--- Home Appliances
-('P014', 'BATCH-H01', '2023-04-12', '2033-04-12',  40, 'WH-A', NULL),
-('P014', 'BATCH-H02', '2023-10-22', '2033-10-22',  25, 'WH-B', NULL),
-('P015', 'BATCH-H03', '2023-07-30', '2033-07-30',  30, 'WH-A', NULL),
-('P016', 'BATCH-H04', '2023-08-15', '2028-08-15',  45, 'WH-A', NULL),
-('P016', 'BATCH-H05', '2023-12-01', '2028-12-01',  60, 'WH-B', NULL),
-
--- Toys (hạn rất dài)
-('P018', 'BATCH-T01', '2023-01-10', '2035-01-10',  20, 'WH-A', NULL),
-('P018', 'BATCH-T02', '2023-06-15', '2035-06-15',  15, 'WH-B', NULL),
-('P019', 'BATCH-T03', '2023-09-05', '2030-09-05',  80, 'WH-B', NULL),
-('P020', 'BATCH-T04', '2023-02-20', '2035-02-20', 100, 'WH-A', NULL),
-
--- Lô hàng bổ sung
-('P002', 'BATCH-E05', '2024-01-10', '2029-01-10',  15, 'WH-C', NULL),
-('P006', 'BATCH-G08', '2024-03-14', '2024-03-21',  50, 'WH-A', NULL),
-('P011', 'BATCH-C09', '2024-01-05', '2031-01-05',  80, 'WH-A', NULL),
-('P015', 'BATCH-H09', '2024-02-18', '2034-02-18',  10, 'WH-C', NULL),
-('P019', 'BATCH-T09', '2024-03-01', '2031-03-01',  40, 'WH-A', NULL),
-
--- Lô hàng mẫu ở STORES
-('P001', 'BATCH-E01', '2023-10-01', '2028-10-01',  15, NULL, 'ST-01'),
-('P005', 'BATCH-G01', '2024-03-01', '2024-03-15',  20, NULL, 'ST-02');
+-- Additional batches for testing sorting/priority
+('B031', 'P006', '2026-04-05', '2026-05-10', '2026-04-06', 180, 'W001', NULL),
+('B032', 'P006', '2026-04-10', '2026-05-20', '2026-04-11', 220, 'W001', NULL),
+('B033', 'P014', '2026-04-02', '2026-10-02', '2026-04-03', 900, 'W002', NULL),
+('B034', 'P014', '2026-04-03', '2026-09-28', '2026-04-04', 850, 'W003', NULL),
+('B035', 'P001', '2026-01-15', '2027-01-15', '2026-01-18', 600, 'W002', NULL),
+('B036', 'P001', '2026-02-01', '2027-02-01', '2026-02-03', 550, 'W003', NULL),
+('B037', 'P016', '2026-05-02', '2026-05-09', '2026-05-03', 120, NULL, 'S002'),
+('B038', 'P017', '2026-05-03', '2026-05-12', '2026-05-04', 70, NULL, 'S003'),
+('B039', 'P020', '2026-03-10', '2026-12-10', '2026-03-12', 240, 'W001', NULL),
+('B040', 'P003', '2026-02-10', '2026-08-10', '2026-02-12', 320, NULL, 'S004');

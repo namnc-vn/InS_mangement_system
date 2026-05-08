@@ -35,17 +35,17 @@ CREATE TABLE products (
     CONSTRAINT fk_product_category FOREIGN KEY (category_id) REFERENCES categories(id)
 );
 
--- 4. Tồn kho (liên kết products, warehouses & stores)
-CREATE TABLE inventory (
-    id INT AUTO_INCREMENT PRIMARY KEY,
+-- 4. Batch (liên kết products, warehouses & stores)
+CREATE TABLE batch (
+    batch_id VARCHAR(20) PRIMARY KEY,
     product_id VARCHAR(10),
-    batch_id VARCHAR(20),
     mfg_date DATE,
     exp_date DATE,
+    entry_date DATE,
     quantity INT,
     warehouse_id VARCHAR(10) NULL,
     store_id VARCHAR(10) NULL,
-    CONSTRAINT fk_inventory_product FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
-    CONSTRAINT fk_inventory_warehouse FOREIGN KEY (warehouse_id) REFERENCES warehouses(id),
-    CONSTRAINT fk_inventory_store FOREIGN KEY (store_id) REFERENCES stores(id)
+    CONSTRAINT fk_batch_product FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
+    CONSTRAINT fk_batch_warehouse FOREIGN KEY (warehouse_id) REFERENCES warehouses(id),
+    CONSTRAINT fk_batch_store FOREIGN KEY (store_id) REFERENCES stores(id)
 );

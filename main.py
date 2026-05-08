@@ -16,7 +16,7 @@ class Menu:
         print("6. [Cảnh báo] Sản phẩm sắp hết hàng (Low Stock)")
         print("7. [Cảnh báo] Lô hàng sắp HẾT HẠN (Expiring Soon)") 
         print("8. Tìm kiếm Sản phẩm theo Tên (Trie Auto-complete)")
-        print("9. Lịch sử Sản phẩm vừa xem (Queue / Deque)") # Thêm tính năng này
+        print("9. Lịch sử Sản phẩm vừa xem (Queue / Deque)") 
         print("10. Thoát chương trình")
         print("="*35)
 
@@ -31,16 +31,15 @@ def main():
     # 1. Khởi tạo kết nối DB và Service
     try:
         conn = db_connect.get_connection()
-        cursor = conn.cursor()
     except Exception as e:
         print(f"Lỗi kết nối cơ sở dữ liệu: {e}")
         return
 
-    service = Service()
+    service = Service(conn)
     
     # 2. Tải toàn bộ dữ liệu từ MySQL lên RAM (Cache)
     print("Đang tải dữ liệu hệ thống...")
-    service.load_data(cursor)
+    service.load_data()
     print("Tải dữ liệu hoàn tất!")
 
     # 3. Vòng lặp chính của chương trình
@@ -64,7 +63,7 @@ def main():
                 elif sub_choice == 'b':
                     c_id = input("Nhập ID danh mục mới: ").strip()
                     c_name = input("Nhập tên danh mục: ").strip()
-                    if service.add_category(c_id, c_name, cursor, conn):
+                    if service.add_category(c_id, c_name):
                         print(f"-> Đã thêm danh mục '{c_name}' thành công!")
                     else:
                         print(f"-> Lỗi: ID danh mục '{c_id}' đã tồn tại!")
@@ -96,13 +95,13 @@ def main():
                 status = input(" Trạng thái (VD: Available): ").strip()
                 
                 # Thử thêm sản phẩm (hàm này sẽ kiểm tra xem category_id có hợp lệ không)
-                if service.add_product(prod_id, name, category_id, price, status, cursor, conn):
+                if service.add_product(prod_id, name, category_id, price, status):
                     print("-> Đã tạo sản phẩm mới thành công!")
                 else:
                     print("-> Thêm sản phẩm thất bại. Vui lòng kiểm tra lại ID danh mục hoặc ID sản phẩm.")
                     continue # Quay lại menu chính nếu lỗi
 
-            # Xử lý thông tin Lô hàng (Inventory)
+            # Xử lý thông tin Lô hàng (Batch)
             print("\n-- Thông tin lô hàng nhập kho --")
             try:
                 quantity = int(input(" Số lượng: "))
@@ -115,7 +114,9 @@ def main():
             exp_date = input(" Hạn sử dụng (YYYY-MM-DD): ").strip()
             warehouse_id = input(" Mã kho: ").strip()
             
-            if service.add_inventory_item(prod_id, quantity, batch_id, mfg_date, exp_date, warehouse_id, cursor, conn):
+            from datetime import date
+            entry_date = date.today()
+            if service.add_batch_item(prod_id, quantity, batch_id, mfg_date, exp_date, entry_date, warehouse_id):
                 print("-> Nhập kho thành công!")
             else:
                 print("-> Đã xảy ra lỗi khi nhập kho.")
@@ -130,11 +131,20 @@ def main():
                 
         elif choice == '3':
             print("\n--- TÌNH TRẠNG KHO HÀNG ---")
-            inventory = service.show_inventory()
-            if not inventory:
+            # Load toàn bộ batch cho tất cả sản phẩm (chỉ khi cần)
+            all_batch = []
+            for prod_id in service.products_map.keys():
+                items = service.load_product_batch(prod_id)
+                all_batch.extend(items)
+            
+            if not all_batch:
                 print("Kho hàng đang trống.")
-            for item in inventory:
-                print(item)
+            else:
+                for item in all_batch:
+                    print(item)
+            
+            # Clear cache sau khi xem xong
+            service.clear_batch_cache()
                 
         elif choice == '4':
             k = input("\nNhập ID sản phẩm cần tìm: ").strip()
@@ -142,18 +152,37 @@ def main():
             if product:
                 print("-> Kết quả tìm kiếm:")
                 print(product)
+                
+                # Thêm tùy chọn xem batch
+                view_batch = input("Bạn có muốn xem chi tiết batch của sản phẩm này? (y/n): ").strip().lower()
+                if view_batch == 'y':
+                    # Lazy load batch cho sản phẩm này
+                    items = service.load_product_batch(k)
+                    if items:
+                        print(f"-> Các lô hàng của sản phẩm ID '{k}':")
+                        for item in items:
+                            print(item)
+                    else:
+                        print("-> Không có batch nào cho sản phẩm này!")
+                    
+                    # Clear cache sau khi xem xong
+                    service.clear_batch_cache()
             else:
                 print("-> Không tìm thấy sản phẩm với ID này!")
                 
         elif choice == '5':
             k = input("\nNhập ID sản phẩm để xem các lô tồn kho: ").strip()
-            items = service.find_inventory_by_product_id(k)
+            # Lazy load batch cho sản phẩm này
+            items = service.load_product_batch(k)
             if items:
                 print(f"-> Các lô hàng của sản phẩm ID '{k}':")
                 for item in items:
                     print(item)
             else:
-                print("-> Không có hàng trong kho cho sản phẩm này!")
+                print("-> Không có batch nào cho sản phẩm này!")
+            
+            # Clear cache sau khi xem xong
+            service.clear_batch_cache()
                 
         elif choice == '6':
             print("\n--- CẢNH BÁO SẢN PHẨM SẮP HẾT HÀNG ---")
@@ -187,8 +216,8 @@ def main():
             else:
                 print(f"-> CẢNH BÁO: Phát hiện {len(exp_warnings)} lô hàng cần chú ý:")
                 
-                # Đổi MÃ SP thành INV ID (ID của bảng inventory)
-                print(f"{'INV ID':<8} | {'MÃ LÔ':<12} | {'TÊN SẢN PHẨM':<25} | {'HẠN SỬ DỤNG':<12} | {'TÌNH TRẠNG':<15} | {'SỐ LƯỢNG'}")
+                # Batch ID của bảng batch
+                print(f"{'Batch ID':<10} | {'MÃ LÔ':<12} | {'TÊN SẢN PHẨM':<25} | {'HẠN SỬ DỤNG':<12} | {'TÌNH TRẠNG':<15} | {'SỐ LƯỢNG'}")
                 print("-" * 90) 
                 
                 for w in exp_warnings:
@@ -203,6 +232,9 @@ def main():
                         
                     # Lấy w['inv_id'] để in ra
                     print(f"{w['inv_id']:<8} | {w['batch_id']:<12} | {w['product_name'][:22] + '...' if len(w['product_name']) > 22 else w['product_name']:<25} | {str(w['exp_date']):<12} | {status:<15} | {w['quantity']}")
+            
+            # Clear cache sau khi xem cảnh báo xong
+            service.clear_batch_cache()
         elif choice == '8':
             print("\n--- TÌM KIẾM SẢN PHẨM THEO TÊN (AUTO-COMPLETE) ---")
             prefix = input("Nhập tên (hoặc một phần tên) sản phẩm: ").strip()
@@ -231,7 +263,6 @@ def main():
                         print(f"{p.id:<10} | {p.name:<35} | ${p.price:<9}")
         elif choice == '10':
             print("\nĐang đóng kết nối dữ liệu...")
-            cursor.close()
             conn.close()
             print("Thoát chương trình. Tạm biệt!")
             break

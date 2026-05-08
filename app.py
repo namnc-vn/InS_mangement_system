@@ -3,9 +3,9 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 from tkcalendar import DateEntry # <--- THƯ VIỆN LỊCH
 from service import Service
-from history import (CommandHistory, AddInventoryCommand, UpdateInventoryQtyCommand,
-                      AddProductCommand, AddCategoryCommand, AddWarehouseCommand, 
-                      AddStoreCommand, TransferInventoryCommand)
+from history import (CommandHistory, AddBatchCommand, UpdateBatchQtyCommand,
+                      AddProductCommand, AddCategoryCommand, AddWarehouseCommand,
+                      AddStoreCommand, TransferBatchCommand)
 from datetime import datetime, date as date_type
 import db_connect
 
@@ -19,7 +19,7 @@ PRIMARY_COLOR = "#3b82f6"
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Inventory and Store management")
+        self.title("Batch and Store management")
         self.geometry("1250x800")
         self.configure(fg_color=BG_APP)
 
@@ -58,13 +58,14 @@ class App(ctk.CTk):
 
     def style_treeview(self):
         style = ttk.Style()
-        style.theme_use("default")
-        style.configure("Treeview", background=BG_CARD, foreground=TEXT_MAIN, rowheight=40, 
+        style.theme_use("clam")
+        style.configure("Treeview", background=BG_CARD, foreground=TEXT_MAIN, rowheight=40,
                         fieldbackground=BG_CARD, borderwidth=0, font=("Inter", 11))
-        style.configure("Treeview.Heading", background=BG_CARD, foreground=TEXT_SUB, 
+        style.configure("Treeview.Heading", background=BG_CARD, foreground=TEXT_SUB,
                         font=("Inter", 10, "bold"), borderwidth=0)
         style.layout("Treeview", [('Treeview.treearea', {'sticky': 'nswe'})])
-        style.map("Treeview", background=[("selected", "#e0e7ff")], foreground=[("selected", PRIMARY_COLOR)])
+        style.map("Treeview", background=[("selected", "#e0e7ff"), ("!selected", BG_CARD)],
+                  foreground=[("selected", PRIMARY_COLOR)])
 
     # ==========================================
     # HEADER & THÊM MỚI (TÍCH HỢP TRIE & CALENDAR)
@@ -75,7 +76,7 @@ class App(ctk.CTk):
 
         title_box = ctk.CTkFrame(self.header_frame, fg_color="transparent")
         title_box.pack(side="left")
-        ctk.CTkLabel(title_box, text="Inventory and Store Management", font=("Inter", 24, "bold"), text_color=TEXT_MAIN).pack(anchor="w")
+        ctk.CTkLabel(title_box, text="Batch and Store Management", font=("Inter", 24, "bold"), text_color=TEXT_MAIN).pack(anchor="w")
         ctk.CTkLabel(title_box, text="App quản lý kho hàng và cửa hàng", font=("Inter", 13), text_color=TEXT_SUB).pack(anchor="w")
 
         ctk.CTkButton(self.header_frame, text="⚙️ Cài đặt", fg_color="#f3f4f6", text_color=TEXT_MAIN,
@@ -94,13 +95,13 @@ class App(ctk.CTk):
                                       state="disabled", command=self.do_undo)
         self.btn_undo.pack(side="right", padx=3)
 
-        ctk.CTkButton(self.header_frame, text="➕ New Inventory", fg_color=PRIMARY_COLOR, hover_color="#2563eb",
-                      font=("Inter", 13, "bold"), height=40, command=self.open_add_inventory_dialog).pack(side="right", padx=6)
+        ctk.CTkButton(self.header_frame, text="➕ New Batch", fg_color=PRIMARY_COLOR, hover_color="#2563eb",
+                      font=("Inter", 13, "bold"), height=40, command=self.open_add_batch_dialog).pack(side="right", padx=6)
 
-    def open_add_inventory_dialog(self):
+    def open_add_batch_dialog(self):
         """Hộp thoại thêm tồn kho — Autocomplete thực sự với Entry + Listbox nổi"""
         dialog = ctk.CTkToplevel(self)
-        dialog.title("Add New Inventory")
+        dialog.title("Add New Batch")
         dialog.geometry("520x640")
         dialog.resizable(False, False)
         dialog.attributes("-topmost", True)
@@ -234,14 +235,14 @@ class App(ctk.CTk):
         ctk.CTkLabel(dialog, text="Warehouse:",
                      font=("Inter", 12, "bold")).pack(pady=(4, 2), padx=20, anchor="w")
         wh_values = (list(self.service.warehouses_map.keys())
-                     or list(set(inv.warehouse_id for inv in self.service.inventory_map.values() if inv.warehouse_id))
+                     or list(set(inv.warehouse_id for inv in self.service.batch_map.values() if inv.warehouse_id))
                      or ["WH-A", "WH-B"])
         wh_cb = ctk.CTkComboBox(dialog, width=470, values=wh_values, font=("Inter", 12))
         wh_cb.pack(padx=20)
         if wh_values:
             wh_cb.set(wh_values[0])
 
-        def save_inventory():
+        def save_batch():
             p_id = prod_var.get().strip()
             if p_id not in self.service.products_map:
                 ask = messagebox.askyesno(
@@ -259,19 +260,20 @@ class App(ctk.CTk):
                 wh    = wh_cb.get()
                 qty   = int(qty_ent.get())
                 # Kiểm tra trước để biết là Update hay Insert (phục vụ Undo)
-                existing = self.service.check_item_exist(p_id, b_id, mfg, exp, wh)
+                existing = self.service.check_batch_exist(p_id, b_id, mfg, exp, wh)
                 old_qty  = existing.quantity if existing else None
-                old_id   = existing.id if existing else None
+                old_batch_id   = existing.batch_id if existing else None
 
-                self.service.add_inventory_item(p_id, qty, b_id, mfg, exp, wh)
+                entry_date = mfg  # Assume entry_date = mfg_date
+                self.service.add_batch_item(p_id, qty, b_id, mfg, exp, entry_date, wh)
 
                 # Tạo và đẩy Command vào history
                 if old_qty is not None:
-                    cmd = UpdateInventoryQtyCommand(old_id, old_qty, qty)
+                    cmd = UpdateBatchQtyCommand(old_batch_id, old_qty, qty)
                 else:
                     comp_key = (p_id, b_id, mfg, exp, wh)
-                    new_item = self.service.inventory_composite_map.get(comp_key)
-                    cmd = AddInventoryCommand(new_item.id, p_id, b_id, mfg, exp, qty, wh)
+                    new_item = self.service.batch_composite_map.get(comp_key)
+                    cmd = AddBatchCommand(new_item.batch_id, p_id, mfg, exp, entry_date, qty, wh)
                 self.history.push(cmd)
                 self._update_undo_redo_buttons()
 
@@ -282,9 +284,9 @@ class App(ctk.CTk):
             except Exception as e:
                 messagebox.showerror("Error", f"Lỗi nhập liệu/CSDL: {e}")
 
-        ctk.CTkButton(dialog, text="💾 Save Inventory", fg_color=PRIMARY_COLOR,
+        ctk.CTkButton(dialog, text="💾 Save Batch", fg_color=PRIMARY_COLOR,
                       hover_color="#2563eb", font=("Inter", 13, "bold"),
-                      height=42, width=470, command=save_inventory).pack(pady=18, padx=20)
+                      height=42, width=470, command=save_batch).pack(pady=18, padx=20)
 
     def open_add_product_dialog(self, prefill_id):
         p_dialog = ctk.CTkToplevel(self)
@@ -322,7 +324,7 @@ class App(ctk.CTk):
                 if success:
                     self.history.push(AddProductCommand(p_id, p_name, cat_id, price, status))
                     self._update_undo_redo_buttons()
-                    messagebox.showinfo("Success", "Sản phẩm đã tạo thành công! Bạn có thể lưu Inventory.")
+                    messagebox.showinfo("Success", "Sản phẩm đã tạo thành công! Bạn có thể lưu Batch.")
                     p_dialog.destroy()
                 else:
                     messagebox.showerror("Error", "ID Sản phẩm đã tồn tại!")
@@ -409,11 +411,11 @@ class App(ctk.CTk):
 
     def open_warning_dialog(self):
         dialog = ctk.CTkToplevel(self)
-        dialog.title("Inventory Alerts")
+        dialog.title("Batch Alerts")
         dialog.geometry("940x560")
         dialog.attributes("-topmost", True)
 
-        header = ctk.CTkLabel(dialog, text="Inventory Alerts", font=("Inter", 20, "bold"), text_color=TEXT_MAIN)
+        header = ctk.CTkLabel(dialog, text="Batch Alerts", font=("Inter", 20, "bold"), text_color=TEXT_MAIN)
         header.pack(anchor="w", padx=24, pady=(20, 10))
 
         desc = ctk.CTkLabel(dialog, text="Danh sách hàng sắp hết hạn và hàng tồn kho thấp", font=("Inter", 13), text_color=TEXT_SUB)
@@ -531,18 +533,18 @@ class App(ctk.CTk):
         if self.active_tab == "Category":
             button_frame = ctk.CTkFrame(toolbar, fg_color="transparent")
             button_frame.pack(side="right")
-            ctk.CTkButton(button_frame, text="📋 Show Inventory", fg_color="#8b5cf6", hover_color="#7c3aed",
+            ctk.CTkButton(button_frame, text="📋 Show Batch", fg_color="#8b5cf6", hover_color="#7c3aed",
                           font=("Inter", 13, "bold"), height=38,
-                          command=self.open_inventory_dialog_for_categories).pack(side="left", padx=5)
+                          command=self.open_batch_dialog_for_categories).pack(side="left", padx=5)
             ctk.CTkButton(button_frame, text="➕ Add Category", fg_color="#10b981", hover_color="#059669",
                           font=("Inter", 13, "bold"), height=38,
                           command=self.open_add_category_dialog).pack(side="left", padx=5)
         elif self.active_tab == "Product":
             button_frame = ctk.CTkFrame(toolbar, fg_color="transparent")
             button_frame.pack(side="right")
-            ctk.CTkButton(button_frame, text="📋 Show Inventory", fg_color="#8b5cf6", hover_color="#7c3aed",
+            ctk.CTkButton(button_frame, text="📋 Show Batch", fg_color="#8b5cf6", hover_color="#7c3aed",
                           font=("Inter", 13, "bold"), height=38,
-                          command=self.open_inventory_dialog_for_products).pack(side="left", padx=5)
+                          command=self.open_batch_dialog_for_products).pack(side="left", padx=5)
         elif self.active_tab == "Warehouse":
             ctk.CTkButton(toolbar, text="➕ Add Warehouse", fg_color="#10b981", hover_color="#059669",
                           font=("Inter", 13, "bold"), height=38,
@@ -613,7 +615,7 @@ class App(ctk.CTk):
             values = self.tree.item(selected_item)['values']
             prod_id = values[1] if len(values) > 1 else values[0]
             self.selected_products = {str(prod_id)}
-            self.open_inventory_dialog_for_products()
+            self.open_batch_dialog_for_products()
         except IndexError: pass
 
     def on_tree_click_category_checkbox(self, event):
@@ -680,29 +682,29 @@ class App(ctk.CTk):
         try:
             selected_item = self.tree.selection()[0]
             wh_id = self.tree.item(selected_item)['values'][0]
-            # Load and display inventory for warehouse
-            inventory_items = [inv for inv in self.service.inventory_map.values() 
+            # Load and display batch for warehouse
+            batch_items = [inv for inv in self.service.batch_map.values() 
                              if str(inv.warehouse_id) == str(wh_id)]
-            if not inventory_items:
-                messagebox.showinfo("Info", f"No inventory found in Warehouse {wh_id}", parent=self)
+            if not batch_items:
+                messagebox.showinfo("Info", f"No batch found in Warehouse {wh_id}", parent=self)
                 return
-            self._show_inventory_dialog("Warehouse Inventory", inventory_items)
+            self._show_batch_dialog("Warehouse Batch", batch_items)
         except IndexError: pass
 
     def on_store_double_click(self, event):
         try:
             selected_item = self.tree.selection()[0]
             store_id = self.tree.item(selected_item)['values'][0]
-            # Load and display inventory for store
-            inventory_items = [inv for inv in self.service.inventory_map.values() 
+            # Load and display batch for store
+            batch_items = [inv for inv in self.service.batch_map.values() 
                              if str(inv.store_id) == str(store_id)]
-            if not inventory_items:
-                messagebox.showinfo("Info", f"No inventory found in Store {store_id}", parent=self)
+            if not batch_items:
+                messagebox.showinfo("Info", f"No batch found in Store {store_id}", parent=self)
                 return
-            self._show_inventory_dialog("Store Inventory", inventory_items)
+            self._show_batch_dialog("Store Batch", batch_items)
         except IndexError: pass
 
-    def _format_inventory_status(self, inv, low_stock_threshold):
+    def _format_batch_status(self, inv, low_stock_threshold):
         status = "Low Stock" if inv.quantity <= low_stock_threshold else "In Stock"
         exp_date = inv.exp_date
         days_left = None
@@ -724,8 +726,8 @@ class App(ctk.CTk):
             return "🟡 Low Stock"
         return "🟢 In Stock"
 
-    def _format_inventory_status_and_tag(self, inv, low_stock_threshold):
-        status_text = self._format_inventory_status(inv, low_stock_threshold)
+    def _format_batch_status_and_tag(self, inv, low_stock_threshold):
+        status_text = self._format_batch_status(inv, low_stock_threshold)
         if status_text.startswith("🔴"):
             return status_text, "expired"
         if status_text.startswith("🟠"):
@@ -736,20 +738,20 @@ class App(ctk.CTk):
             return status_text, "lowstock"
         return status_text, "instock"
 
-    def _show_inventory_dialog(self, title, inventory_items):
-        """Generic dialog to show inventory items"""
+    def _show_batch_dialog(self, title, batch_items):
+        """Generic dialog to show batch items"""
         dialog = ctk.CTkToplevel(self)
         dialog.title(title)
         dialog.geometry("900x500")
         dialog.attributes("-topmost", True)
         
-        if not inventory_items:
-            ctk.CTkLabel(dialog, text="No inventory found", 
+        if not batch_items:
+            ctk.CTkLabel(dialog, text="No batch found", 
                         font=("Inter", 12)).pack(pady=20)
             return
         
-        # Treeview để hiển thị inventory
-        cols = ("ID", "Product", "Batch", "Quantity", "Location", "Exp Date", "Status")
+        # Treeview để hiển thị batch
+        cols = ("Batch ID", "Product", "MFG Date", "Quantity", "Location", "Exp Date", "Entry Date", "Status")
         tree = ttk.Treeview(dialog, columns=cols, show="headings", height=20)
         for col in cols:
             tree.heading(col, text=col.upper())
@@ -763,11 +765,11 @@ class App(ctk.CTk):
         
         # Thêm data
         low_stock_threshold = self.service.settings.get("low_stock_threshold", 10)
-        for inv in inventory_items:
+        for inv in batch_items:
             prod_name = getattr(self.service.products_map.get(inv.product_id), 'name', inv.product_id)
-            status_text, status_tag = self._format_inventory_status_and_tag(inv, low_stock_threshold)
+            status_text, status_tag = self._format_batch_status_and_tag(inv, low_stock_threshold)
             loc = f"🏪 {inv.store_id}" if inv.store_id else f"🏢 {inv.warehouse_id}"
-            tree.insert("", "end", values=(inv.id, prod_name, inv.batch_id, inv.quantity, loc, inv.exp_date, status_text), tags=(status_tag,))
+            tree.insert("", "end", values=(inv.batch_id, prod_name, inv.mfg_date, inv.quantity, loc, inv.exp_date, inv.entry_date, status_text), tags=(status_tag,))
         
         tree.pack(fill="both", expand=True, padx=10, pady=10)
     
@@ -1041,7 +1043,7 @@ class App(ctk.CTk):
         item_data = self.tree.item(selected[0])['values']
         item_id = item_data[0] # ID nằm ở cột đầu tiên
         # Lấy từ service
-        source_item = self.service.inventory_map.get(item_id)
+        source_item = self.service.batch_map.get(item_id)
         if not source_item or not source_item.warehouse_id:
             messagebox.showwarning("Warning", "Chỉ có thể luân chuyển lô hàng từ Warehouse (Kho) xuống Store!")
             return
@@ -1080,12 +1082,12 @@ class App(ctk.CTk):
                 return
             
             try:
-                success, new_item_id = self.service.transfer_inventory(source_item.id, target_store, transfer_qty)
+                success, new_batch_id = self.service.transfer_batch(source_item.batch_id, target_store, transfer_qty)
                 if success:
                     # Truyền Undo/Redo command
-                    self.history.push(TransferInventoryCommand(
-                        source_item_id=source_item.id,
-                        target_item_id=new_item_id,
+                    self.history.push(TransferBatchCommand(
+                        source_batch_id=source_item.batch_id,
+                        target_batch_id=new_batch_id,
                         target_store_id=target_store,
                         transfer_qty=transfer_qty
                     ))
@@ -1101,33 +1103,33 @@ class App(ctk.CTk):
         ctk.CTkButton(dialog, text="Confirm Transfer", fg_color="#8b5cf6", hover_color="#7c3aed",
                       font=("Inter", 13, "bold"), command=confirm_transfer).pack(pady=10)
 
-    def open_inventory_dialog_for_categories(self):
-        """Hiển thị hộp thoại inventory của các category được chọn"""
+    def open_batch_dialog_for_categories(self):
+        """Hiển thị hộp thoại batch của các category được chọn"""
         if not self.selected_categories:
             messagebox.showwarning("Warning", "Vui lòng chọn ít nhất một category (checkbox ✓)", parent=self)
             return
         
         dialog = ctk.CTkToplevel(self)
-        dialog.title("Inventory by Category")
+        dialog.title("Batch by Category")
         dialog.geometry("900x500")
         dialog.attributes("-topmost", True)
         
-        # Tổng hợp inventory của các category được chọn
-        all_inventory = []
+        # Tổng hợp batch của các category được chọn
+        all_batch = []
         for cat_id in self.selected_categories:
             products = [p for p in self.service.products_map.values() 
                        if str(p.category_id) == str(cat_id)]
             for prod in products:
-                inv_items = self.service.load_product_inventory(prod.id)
-                all_inventory.extend(inv_items if inv_items else [])
+                batch_items = self.service.load_product_batch(prod.id)
+                all_batch.extend(batch_items if batch_items else [])
         
-        if not all_inventory:
-            ctk.CTkLabel(dialog, text="No inventory found for selected categories", 
+        if not all_batch:
+            ctk.CTkLabel(dialog, text="No batch found for selected categories", 
                         font=("Inter", 12)).pack(pady=20)
             return
         
-        # Treeview để hiển thị inventory
-        cols = ("ID", "Product", "Batch", "Quantity", "Location", "Exp Date", "Status")
+        # Treeview để hiển thị batch
+        cols = ("Batch ID", "Product", "MFG Date", "Quantity", "Location", "Exp Date", "Entry Date", "Status")
         tree = ttk.Treeview(dialog, columns=cols, show="headings", height=20)
         for col in cols:
             tree.heading(col, text=col.upper())
@@ -1140,38 +1142,38 @@ class App(ctk.CTk):
         
         # Thêm data
         low_stock_threshold = self.service.settings.get("low_stock_threshold", 10)
-        for inv in all_inventory:
+        for inv in all_batch:
             prod_name = getattr(self.service.products_map.get(inv.product_id), 'name', inv.product_id)
-            status_text, status_tag = self._format_inventory_status_and_tag(inv, low_stock_threshold)
+            status_text, status_tag = self._format_batch_status_and_tag(inv, low_stock_threshold)
             loc = f"🏪 {inv.store_id}" if inv.store_id else f"🏢 {inv.warehouse_id}"
-            tree.insert("", "end", values=(inv.id, prod_name, inv.batch_id, inv.quantity, loc, inv.exp_date, status_text), tags=(status_tag,))
+            tree.insert("", "end", values=(inv.batch_id, prod_name, inv.mfg_date, inv.quantity, loc, inv.exp_date, inv.entry_date, status_text), tags=(status_tag,))
         
         tree.pack(fill="both", expand=True, padx=10, pady=10)
 
-    def open_inventory_dialog_for_products(self):
-        """Hiển thị hộp thoại inventory của các product được chọn"""
+    def open_batch_dialog_for_products(self):
+        """Hiển thị hộp thoại batch của các product được chọn"""
         if not self.selected_products:
             messagebox.showwarning("Warning", "Vui lòng chọn ít nhất một product (checkbox ✓)", parent=self)
             return
         
         dialog = ctk.CTkToplevel(self)
-        dialog.title("Inventory by Product")
+        dialog.title("Batch by Product")
         dialog.geometry("900x500")
         dialog.attributes("-topmost", True)
         
-        # Tổng hợp inventory của các product được chọn
-        all_inventory = []
+        # Tổng hợp batch của các product được chọn
+        all_batch = []
         for prod_id in self.selected_products:
-            inv_items = self.service.load_product_inventory(prod_id)
-            all_inventory.extend(inv_items if inv_items else [])
+            batch_items = self.service.load_product_batch(prod_id)
+            all_batch.extend(batch_items if batch_items else [])
         
-        if not all_inventory:
-            ctk.CTkLabel(dialog, text="No inventory found for selected products", 
+        if not all_batch:
+            ctk.CTkLabel(dialog, text="No batch found for selected products", 
                         font=("Inter", 12)).pack(pady=20)
             return
         
-        # Treeview để hiển thị inventory
-        cols = ("ID", "Product", "Batch", "Quantity", "Location", "Exp Date", "Status")
+        # Treeview để hiển thị batch
+        cols = ("Batch ID", "Product", "MFG Date", "Quantity", "Location", "Exp Date", "Entry Date", "Status")
         tree = ttk.Treeview(dialog, columns=cols, show="headings", height=20)
         for col in cols:
             tree.heading(col, text=col.upper())
@@ -1184,11 +1186,11 @@ class App(ctk.CTk):
         
         # Thêm data
         low_stock_threshold = self.service.settings.get("low_stock_threshold", 10)
-        for inv in all_inventory:
+        for inv in all_batch:
             prod_name = getattr(self.service.products_map.get(inv.product_id), 'name', inv.product_id)
-            status_text, status_tag = self._format_inventory_status_and_tag(inv, low_stock_threshold)
+            status_text, status_tag = self._format_batch_status_and_tag(inv, low_stock_threshold)
             loc = f"🏪 {inv.store_id}" if inv.store_id else f"🏢 {inv.warehouse_id}"
-            tree.insert("", "end", values=(inv.id, prod_name, inv.batch_id, inv.quantity, loc, inv.exp_date, status_text), tags=(status_tag,))
+            tree.insert("", "end", values=(inv.batch_id, prod_name, inv.mfg_date, inv.quantity, loc, inv.exp_date, inv.entry_date, status_text), tags=(status_tag,))
         
         tree.pack(fill="both", expand=True, padx=10, pady=10)
     

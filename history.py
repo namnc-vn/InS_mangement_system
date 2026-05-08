@@ -15,24 +15,24 @@ class Command:
 #             Service mới được phép gọi DB trực tiếp
 # ==========================================
 
-class AddInventoryCommand(Command):
+class AddBatchCommand(Command):
     """Lệnh thêm lô hàng mới"""
-    def __init__(self, item_id, product_id, batch_id, mfg_date, exp_date, quantity, warehouse_id):
-        self.item_id = item_id
-        self.product_id = product_id
+    def __init__(self, batch_id, product_id, mfg_date, exp_date, entry_date, quantity, warehouse_id):
         self.batch_id = batch_id
+        self.product_id = product_id
         self.mfg_date = mfg_date
         self.exp_date = exp_date
+        self.entry_date = entry_date
         self.quantity = quantity
         self.warehouse_id = warehouse_id
 
     def undo(self, service):
-        service.remove_inventory_item(self.item_id)
+        service.remove_batch_item(self.batch_id)
 
     def redo(self, service):
-        service.restore_inventory_item(
-            self.item_id, self.product_id, self.batch_id,
-            self.mfg_date, self.exp_date, self.quantity,
+        service.restore_batch_item(
+            self.batch_id, self.product_id, self.batch_id,
+            self.mfg_date, self.exp_date, self.entry_date, self.quantity,
             self.warehouse_id
         )
 
@@ -40,21 +40,21 @@ class AddInventoryCommand(Command):
         return f"Thêm kho: {self.product_id} | Lô {self.batch_id} | SL {self.quantity}"
 
 
-class UpdateInventoryQtyCommand(Command):
+class UpdateBatchQtyCommand(Command):
     """Lệnh cộng thêm số lượng vào lô hàng đã tồn tại"""
-    def __init__(self, item_id, old_qty, added_qty):
-        self.item_id = item_id
+    def __init__(self, batch_id, old_qty, added_qty):
+        self.batch_id = batch_id
         self.old_qty = old_qty
         self.added_qty = added_qty
 
     def undo(self, service):
-        service.update_inventory_quantity(self.item_id, self.old_qty)
+        service.update_batch_quantity(self.batch_id, self.old_qty)
 
     def redo(self, service):
-        service.update_inventory_quantity(self.item_id, self.old_qty + self.added_qty)
+        service.update_batch_quantity(self.batch_id, self.old_qty + self.added_qty)
 
     def description(self):
-        return f"Cập nhật SL lô ID {self.item_id}: {self.old_qty} → {self.old_qty + self.added_qty}"
+        return f"Cập nhật SL lô {self.batch_id}: {self.old_qty} → {self.old_qty + self.added_qty}"
 
 
 class AddProductCommand(Command):
@@ -127,34 +127,34 @@ class AddStoreCommand(Command):
     def description(self):
         return f"Thêm cửa hàng: {self.name} ({self.store_id})"
 
-class TransferInventoryCommand(Command):
+class TransferBatchCommand(Command):
     """Lệnh chuyển kho (split/merge) — Undo: xóa lô ở đích, trả lại lô ở nguồn"""
-    def __init__(self, source_item_id, target_item_id, target_store_id, transfer_qty, is_merge=False):
-        self.source_item_id = source_item_id
-        self.target_item_id = target_item_id
+    def __init__(self, source_batch_id, target_batch_id, target_store_id, transfer_qty, is_merge=False):
+        self.source_batch_id = source_batch_id
+        self.target_batch_id = target_batch_id
         self.target_store_id = target_store_id
         self.transfer_qty = transfer_qty
         self.is_merge = is_merge
 
     def undo(self, service):
         # Revert transfer using service methods only
-        target_item = service.inventory_map.get(self.target_item_id)
-        source_item = service.inventory_map.get(self.source_item_id)
+        target_item = service.batch_map.get(self.target_batch_id)
+        source_item = service.batch_map.get(self.source_batch_id)
 
         if target_item:
             if target_item.quantity > self.transfer_qty:
-                service.update_inventory_quantity(self.target_item_id, target_item.quantity - self.transfer_qty)
+                service.update_batch_quantity(self.target_batch_id, target_item.quantity - self.transfer_qty)
             else:
-                service.remove_inventory_item(self.target_item_id)
+                service.remove_batch_item(self.target_batch_id)
 
         if source_item:
-            service.update_inventory_quantity(self.source_item_id, source_item.quantity + self.transfer_qty)
+            service.update_batch_quantity(self.source_batch_id, source_item.quantity + self.transfer_qty)
         else:
             # If source item no longer exists, we cannot fully restore it here.
             pass
 
     def redo(self, service):
-        service.transfer_inventory(self.source_item_id, self.target_store_id, self.transfer_qty)
+        service.transfer_batch(self.source_batch_id, self.target_store_id, self.transfer_qty)
 
     def description(self):
         return f"Chuyển {self.transfer_qty} sản phẩm sang Cửa hàng {self.target_store_id}"

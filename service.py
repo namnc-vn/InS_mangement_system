@@ -2,7 +2,7 @@ import heapq
 from datetime import datetime, date
 from collections import deque
 
-from inventory_item import InventoryItem
+from batch_item import BatchItem
 from product import Product
 from category import Category
 from warehouse import Warehouse
@@ -138,7 +138,7 @@ class BSTNode:
         self.items = [item]
         self.left = self.right = None
 
-class InventoryBST:
+class BatchBST:
     def __init__(self):
         self.root = None
 
@@ -191,13 +191,13 @@ class Service:
         # --- Hash Maps (O(1) lookup) ---
         self.categories_map = {}
         self.products_map = {}
-        self.inventory_map = {}              # Temporary cache: chỉ load khi cần
-        self.inventory_composite_map = {}   # Composite key → chống trùng lô hàng
+        self.batch_map = {}              # Temporary cache: chỉ load khi cần
+        self.batch_composite_map = {}   # Composite key → chống trùng lô hàng
         self.warehouses_map = {}
         self.stores_map = {}
 
         # --- DSA nâng cao ---
-        self.qty_bst = InventoryBST()           # BST range search (chỉ cho loaded items)
+        self.qty_bst = BatchBST()           # BST range search (chỉ cho loaded items)
         self.product_id_trie = Trie()           # Autocomplete Product ID
         self.batch_id_trie = Trie()             # Autocomplete Batch ID
         self.product_name_trie = ProductTrie()  # Search sản phẩm theo tên
@@ -206,7 +206,7 @@ class Service:
         self.recently_viewed = deque(maxlen=5)
 
         # --- Lazy Loading Cache ---
-        self.loaded_product_inventories = {}    # {product_id: [InventoryItem]} - cache tạm thời
+        self.loaded_product_batches = {}    # {product_id: [BatchItem]} - cache tạm thời
         self.low_stock_summary = {}             # {product_id: total_quantity} - aggregate
         self.expiring_summary = {}              # {product_id: count_expiring_batches} - aggregate
 
@@ -225,15 +225,15 @@ class Service:
 
         self.categories_map.clear()
         self.products_map.clear()
-        self.inventory_map.clear()  # Không load inventory items nữa
-        self.inventory_composite_map.clear()
+        self.batch_map.clear()  # Không load batch items nữa
+        self.batch_composite_map.clear()
         self.warehouses_map.clear()
         self.stores_map.clear()
-        self.qty_bst = InventoryBST()  # Sẽ load on-demand
+        self.qty_bst = BatchBST()  # Sẽ load on-demand
         self.product_id_trie = Trie()
         self.batch_id_trie = Trie()
         self.product_name_trie = ProductTrie()
-        self.loaded_product_inventories.clear()
+        self.loaded_product_batches.clear()
         self.low_stock_summary.clear()
         self.expiring_summary.clear()
 
@@ -250,7 +250,7 @@ class Service:
                    CASE WHEN MIN(DATEDIFF(i.exp_date, CURDATE())) <= %s THEN 1 ELSE 0 END as has_expiring,
                    CASE WHEN COALESCE(SUM(i.quantity), 0) <= %s THEN 1 ELSE 0 END as has_low_stock
             FROM products p
-            LEFT JOIN inventory i ON p.id = i.product_id
+            LEFT JOIN batch i ON p.id = i.product_id
             GROUP BY p.id
         """, (self.settings["expiring_days_threshold"], self.settings["low_stock_threshold"]))
 
@@ -265,7 +265,7 @@ class Service:
             if prod.has_expiring:
                 # Đếm số lô sắp hết hạn cho sản phẩm này
                 self.cursor.execute("""
-                    SELECT COUNT(*) FROM inventory 
+                    SELECT COUNT(*) FROM batch 
                     WHERE product_id = %s AND DATEDIFF(exp_date, CURDATE()) <= %s
                 """, (prod.id, self.settings["expiring_days_threshold"]))
                 self.expiring_summary[prod.id] = self.cursor.fetchone()[0]
@@ -355,35 +355,35 @@ class Service:
         return list(self.products_map.values())
 
     # =========================================================================
-    # LAZY LOADING INVENTORY
+    # LAZY LOADING BATCH
     # =========================================================================
-    def load_product_inventory(self, product_id):
-        """Lazy load inventory items cho một sản phẩm cụ thể"""
+    def load_product_batch(self, product_id):
+        """Lazy load batch items cho một sản phẩm cụ thể"""
         if self.cursor is None:
             raise ValueError("Service has no database cursor")
-        if product_id in self.loaded_product_inventories:
-            return self.loaded_product_inventories[product_id]
+        if product_id in self.loaded_product_batches:
+            return self.loaded_product_batches[product_id]
 
-        # Query DB để load inventory cho product này
-        self.cursor.execute("SELECT * FROM inventory WHERE product_id = %s", (product_id,))
+        # Query DB để load batch cho product này
+        self.cursor.execute("SELECT * FROM batch WHERE product_id = %s", (product_id,))
         items = []
         for row in self.cursor.fetchall():
-            item = InventoryItem(*row)
+            item = BatchItem(*row)
             items.append(item)
-            # Thêm vào global inventory_map (temporary)
-            self.inventory_map[item.id] = item
+            # Thêm vào global batch_map (temporary)
+            self.batch_map[item.batch_id] = item
             comp_key = (item.product_id, item.batch_id,
                         str(item.mfg_date), str(item.exp_date), item.warehouse_id, item.store_id)
-            self.inventory_composite_map[comp_key] = item
+            self.batch_composite_map[comp_key] = item
             # Thêm vào BST và Trie
             self.qty_bst.insert(item.quantity, item)
             self.batch_id_trie.insert(item.batch_id)
 
-        self.loaded_product_inventories[product_id] = items
+        self.loaded_product_batches[product_id] = items
         return items
 
     def update_product_aggregates(self, product_id):
-        """Cập nhật aggregate data cho một sản phẩm sau khi thay đổi inventory"""
+        """Cập nhật aggregate data cho một sản phẩm sau khi thay đổi batch"""
         if self.cursor is None:
             raise ValueError("Service has no database cursor")
         self.cursor.execute("""
@@ -391,7 +391,7 @@ class Service:
                 COALESCE(SUM(quantity), 0) as total_quantity,
                 CASE WHEN MIN(DATEDIFF(exp_date, CURDATE())) <= %s THEN 1 ELSE 0 END as has_expiring,
                 CASE WHEN COALESCE(SUM(quantity), 0) <= %s THEN 1 ELSE 0 END as has_low_stock
-            FROM inventory 
+            FROM batch 
             WHERE product_id = %s
         """, (self.settings["expiring_days_threshold"], self.settings["low_stock_threshold"], product_id))
         
@@ -407,20 +407,20 @@ class Service:
                 if bool(row[1]):
                     # Đếm số lô expiring
                     cursor.execute("""
-                        SELECT COUNT(*) FROM inventory 
+                        SELECT COUNT(*) FROM batch 
                         WHERE product_id = %s AND DATEDIFF(exp_date, CURDATE()) <= %s
                     """, (product_id, self.settings["expiring_days_threshold"]))
                     self.expiring_summary[product_id] = cursor.fetchone()[0]
                 else:
                     self.expiring_summary[product_id] = 0
 
-    def clear_inventory_cache(self):
+    def clear_batch_cache(self):
         """Xóa temporary cache để tiết kiệm RAM"""
-        self.inventory_map.clear()
-        self.inventory_composite_map.clear()
-        self.qty_bst = InventoryBST()
+        self.batch_map.clear()
+        self.batch_composite_map.clear()
+        self.qty_bst = BatchBST()
         self.batch_id_trie = Trie()
-        self.loaded_product_inventories.clear()
+        self.loaded_product_batches.clear()
 
     def search_products_by_name(self, prefix):
         """Tìm kiếm theo tên bằng ProductTrie — O(L + DFS)"""
@@ -434,69 +434,68 @@ class Service:
         return [self.products_map.get(pid) for pid in reversed(self.recently_viewed)]
 
     # =========================================================================
-    # INVENTORY
+    # BATCH
     # =========================================================================
-    def check_item_exist(self, product_id, batch_id, mfg_date, exp_date, warehouse_id, store_id=None):
+    def check_batch_exist(self, product_id, batch_id, mfg_date, exp_date, warehouse_id, store_id=None):
         """Kiểm tra lô hàng đã tồn tại bằng Composite Key — O(1) hoặc DB lookup nếu chưa cache"""
         comp_key = (product_id, batch_id, str(mfg_date), str(exp_date), warehouse_id, store_id)
-        if comp_key in self.inventory_composite_map:
-            return self.inventory_composite_map[comp_key]
+        if comp_key in self.batch_composite_map:
+            return self.batch_composite_map[comp_key]
         if self.cursor is None:
             return None
         self.cursor.execute(
-            "SELECT * FROM inventory WHERE product_id=%s AND batch_id=%s AND mfg_date=%s AND exp_date=%s AND warehouse_id=%s AND store_id=%s",
+            "SELECT * FROM batch WHERE product_id=%s AND batch_id=%s AND mfg_date=%s AND exp_date=%s AND warehouse_id=%s AND store_id=%s",
             (product_id, batch_id, mfg_date, exp_date, warehouse_id, store_id)
         )
         row = self.cursor.fetchone()
         if not row:
             return None
-        item = InventoryItem(*row)
-        self.inventory_map[item.id] = item
-        self.inventory_composite_map[comp_key] = item
+        item = BatchItem(*row)
+        self.batch_map[item.batch_id] = item
+        self.batch_composite_map[comp_key] = item
         self.batch_id_trie.insert(batch_id)
         return item
 
-    def add_inventory_item(self, product_id, quantity, batch_id, mfg_date, exp_date, warehouse_id, store_id=None):
+    def add_batch_item(self, product_id, quantity, batch_id, mfg_date, exp_date, entry_date, warehouse_id, store_id=None):
         if self.cursor is None or self.conn is None:
             raise ValueError("Service has no database connection")
-        existing = self.check_item_exist(product_id, batch_id, mfg_date, exp_date, warehouse_id, store_id)
+        existing = self.check_batch_exist(product_id, batch_id, mfg_date, exp_date, warehouse_id, store_id)
         if existing:
             existing.quantity += int(quantity)
-            self.cursor.execute("UPDATE inventory SET quantity = %s WHERE id = %s",
-                           (existing.quantity, existing.id))
+            self.cursor.execute("UPDATE batch SET quantity = %s WHERE batch_id = %s",
+                           (existing.quantity, existing.batch_id))
             self.conn.commit()
             # Cập nhật aggregate data
             self.update_product_aggregates(product_id)
-            return True, existing.id
+            return True, existing.batch_id
         else:
             self.cursor.execute(
-                "INSERT INTO inventory (product_id, batch_id, mfg_date, exp_date, quantity, warehouse_id, store_id) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
-                (product_id, batch_id, mfg_date, exp_date, quantity, warehouse_id, store_id)
+                "INSERT INTO batch (batch_id, product_id, mfg_date, exp_date, entry_date, quantity, warehouse_id, store_id) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                (batch_id, product_id, mfg_date, exp_date, entry_date, quantity, warehouse_id, store_id)
             )
             self.conn.commit()
-            item_id = self.cursor.lastrowid
-            new_item = InventoryItem(item_id, product_id, batch_id, mfg_date,
-                                     exp_date, int(quantity), warehouse_id, store_id)
-            self.inventory_map[item_id] = new_item
+            new_item = BatchItem(batch_id, product_id, mfg_date,
+                                     exp_date, entry_date, int(quantity), warehouse_id, store_id)
+            self.batch_map[batch_id] = new_item
             comp_key = (product_id, batch_id, str(mfg_date), str(exp_date), warehouse_id, store_id)
-            self.inventory_composite_map[comp_key] = new_item
+            self.batch_composite_map[comp_key] = new_item
             self.qty_bst.insert(int(quantity), new_item)
             self.batch_id_trie.insert(batch_id)
             # Cập nhật aggregate data
             self.update_product_aggregates(product_id)
-            return True, item_id
+            return True, batch_id
 
-    def find_inventory_by_product_id(self, product_id):
-        if product_id not in self.loaded_product_inventories:
+    def find_batch_by_product_id(self, product_id):
+        if product_id not in self.loaded_product_batches:
             try:
-                self.load_product_inventory(product_id)
+                self.load_product_batch(product_id)
             except ValueError:
                 pass
-        return self.loaded_product_inventories.get(product_id, [])
+        return self.loaded_product_batches.get(product_id, [])
 
-    def show_inventory(self):
-        return list(self.inventory_map.values())
+    def show_batch(self):
+        return list(self.batch_map.values())
 
     # =========================================================================
     # WAREHOUSE
@@ -518,7 +517,7 @@ class Service:
     def get_warehouse_summary(self):
         """Thống kê lô hàng & tổng số lượng theo từng kho — O(n) Hash Map"""
         summary = {}
-        for inv in self.inventory_map.values():
+        for inv in self.batch_map.values():
             if inv.warehouse_id:
                 wh_id = inv.warehouse_id
                 if wh_id not in summary:
@@ -546,7 +545,7 @@ class Service:
 
     def get_store_summary(self):
         summary = {}
-        for inv in self.inventory_map.values():
+        for inv in self.batch_map.values():
             if inv.store_id:
                 st_id = inv.store_id
                 if st_id not in summary:
@@ -555,31 +554,33 @@ class Service:
                 summary[st_id]["total_qty"] += inv.quantity
         return summary
 
-    def transfer_inventory(self, item_id, target_store_id, transfer_qty):
+    def transfer_batch(self, batch_id, target_store_id, transfer_qty):
         """Chuyển số lượng từ lô hàng trong Warehouse sang Store"""
         if self.cursor is None or self.conn is None:
             raise ValueError("Service has no database connection")
-        source_item = self.inventory_map.get(item_id)
+        source_item = self.batch_map.get(batch_id)
         if not source_item or source_item.quantity < transfer_qty:
             return False, "Not enough quantity"
         
         # 1. Trừ số lượng kho (nếu = 0 thì xóa trong service, DB thì delete)
         source_item.quantity -= transfer_qty
         if source_item.quantity > 0:
-            self.cursor.execute("UPDATE inventory SET quantity = %s WHERE id = %s", (source_item.quantity, item_id))
+            self.cursor.execute("UPDATE batch SET quantity = %s WHERE batch_id = %s", (source_item.quantity, batch_id))
         else:
-            self.cursor.execute("DELETE FROM inventory WHERE id = %s", (item_id,))
-            self.inventory_map.pop(item_id)
+            self.cursor.execute("DELETE FROM batch WHERE batch_id = %s", (batch_id,))
+            self.batch_map.pop(batch_id)
             comp_key = (source_item.product_id, source_item.batch_id, str(source_item.mfg_date), str(source_item.exp_date), source_item.warehouse_id, source_item.store_id)
-            self.inventory_composite_map.pop(comp_key, None)
+            self.batch_composite_map.pop(comp_key, None)
         self.conn.commit()
 
         # 2. Thêm vào cửa hàng
-        _, target_item_id = self.add_inventory_item(
+        from datetime import date
+        entry_date = date.today()
+        _, target_batch_id = self.add_batch_item(
             source_item.product_id, transfer_qty, source_item.batch_id, 
-            source_item.mfg_date, source_item.exp_date, None, store_id=target_store_id
+            source_item.mfg_date, source_item.exp_date, entry_date, None, store_id=target_store_id
         )
-        return True, target_item_id
+        return True, target_batch_id
 
     # =========================================================================
     # ALERTS — Heap-based
@@ -599,17 +600,17 @@ class Service:
         return warnings
 
     def get_expiring_soon_warnings(self, days_threshold=30):
-        """Cảnh báo sắp hết hạn — lazy load inventory cho sản phẩm có expiring"""
+        """Cảnh báo sắp hết hạn — lazy load batch cho sản phẩm có expiring"""
         if self.cursor is None:
             return []
 
         today = date.today()
         min_heap = []
 
-        # Load inventory cho các sản phẩm có expiring
+        # Load batch cho các sản phẩm có expiring
         for prod_id, expiring_count in self.expiring_summary.items():
             if expiring_count > 0:
-                items = self.load_product_inventory(prod_id)
+                items = self.load_product_batch(prod_id)
                 for item in items:
                     if isinstance(item.exp_date, str):
                         exp_obj = datetime.strptime(item.exp_date, "%Y-%m-%d").date()
@@ -617,14 +618,13 @@ class Service:
                         exp_obj = item.exp_date
                     days_left = (exp_obj - today).days
                     if days_left <= days_threshold:
-                        heapq.heappush(min_heap, (days_left, item.id, item))
+                        heapq.heappush(min_heap, (days_left, item.batch_id, item))
 
         warnings = []
         while min_heap:
             days_left, _, item = heapq.heappop(min_heap)
             product = self.products_map.get(item.product_id)
             warnings.append({
-                "inv_id": item.id,
                 "batch_id": item.batch_id,
                 "product_name": product.name if product else "Unknown",
                 "exp_date": item.exp_date,
@@ -641,13 +641,13 @@ class Service:
         threshold = self.settings["low_stock_threshold"]
         min_heap = []
 
-        # Load inventory cho các sản phẩm có low stock
+        # Load batch cho các sản phẩm có low stock
         for prod_id, total_qty in self.low_stock_summary.items():
             if total_qty <= threshold:
-                items = self.load_product_inventory(prod_id)
+                items = self.load_product_batch(prod_id)
                 for inv in items:
                     if inv.quantity <= threshold:
-                        heapq.heappush(min_heap, (inv.quantity, inv.id, inv))
+                        heapq.heappush(min_heap, (inv.quantity, inv.batch_id, inv))
 
         return [heapq.heappop(min_heap)[2] for _ in range(len(min_heap))]
 
@@ -659,10 +659,10 @@ class Service:
         today = date.today()
         min_heap = []
 
-        # Load inventory cho các sản phẩm có expiring
+        # Load batch cho các sản phẩm có expiring
         for prod_id, expiring_count in self.expiring_summary.items():
             if expiring_count > 0:
-                items = self.load_product_inventory(prod_id)
+                items = self.load_product_batch(prod_id)
                 for inv in items:
                     try:
                         exp = (datetime.strptime(str(inv.exp_date), "%Y-%m-%d").date()
@@ -687,10 +687,10 @@ class Service:
                 if kmp_search(p.name, keyword) or kmp_search(str(p.id), keyword)
             ]
             return list(source) if not keyword.strip() else source
-        elif item_type == "Inventory":
+        elif item_type == "Batch":
             if not keyword.strip():
-                return list(self.inventory_map.values())
-            for inv in self.inventory_map.values():
+                return list(self.batch_map.values())
+            for inv in self.batch_map.values():
                 prod_name = getattr(self.products_map.get(inv.product_id), 'name', str(inv.product_id))
                 if kmp_search(prod_name, keyword) or kmp_search(str(inv.batch_id), keyword):
                     results.append(inv)
@@ -719,47 +719,47 @@ class Service:
     # Nguyên tắc: history.py chỉ gọi service, không tự gọi DB trực tiếp
     # =========================================================================
 
-    # --- INVENTORY ---
-    def remove_inventory_item(self, item_id):
-        """Xóa lô hàng khỏi DB và cập nhật RAM — dùng cho Undo AddInventory"""
+    # --- BATCH ---
+    def remove_batch_item(self, batch_id):
+        """Xóa lô hàng khỏi DB và cập nhật RAM — dùng cho Undo AddBatch"""
         if self.cursor is None or self.conn is None:
             raise ValueError("Service has no database connection")
-        self.cursor.execute("DELETE FROM inventory WHERE id=%s", (item_id,))
+        self.cursor.execute("DELETE FROM batch WHERE batch_id=%s", (batch_id,))
         self.conn.commit()
-        item = self.inventory_map.pop(item_id, None)
+        item = self.batch_map.pop(batch_id, None)
         if item:
             comp_key = (item.product_id, item.batch_id,
                         str(item.mfg_date), str(item.exp_date), item.warehouse_id, item.store_id)
-            self.inventory_composite_map.pop(comp_key, None)
+            self.batch_composite_map.pop(comp_key, None)
         return item
 
-    def restore_inventory_item(self, item_id, product_id, batch_id,
-                               mfg_date, exp_date, quantity, warehouse_id, store_id=None):
-        """Chèn lại lô hàng với ID cũ — dùng cho Redo AddInventory"""
+    def restore_batch_item(self, batch_id, product_id, batch_id_val,
+                               mfg_date, exp_date, entry_date, quantity, warehouse_id, store_id=None):
+        """Chèn lại lô hàng với batch_id cũ — dùng cho Redo AddBatch"""
         if self.cursor is None or self.conn is None:
             raise ValueError("Service has no database connection")
         self.cursor.execute(
-            "INSERT INTO inventory (id, product_id, batch_id, mfg_date, exp_date, quantity, warehouse_id, store_id) "
+            "INSERT INTO batch (batch_id, product_id, mfg_date, exp_date, entry_date, quantity, warehouse_id, store_id) "
             "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
-            (item_id, product_id, batch_id, mfg_date, exp_date, quantity, warehouse_id, store_id)
+            (batch_id, product_id, mfg_date, exp_date, entry_date, quantity, warehouse_id, store_id)
         )
         self.conn.commit()
-        new_item = InventoryItem(item_id, product_id, batch_id,
-                                  mfg_date, exp_date, quantity, warehouse_id, store_id)
-        self.inventory_map[item_id] = new_item
-        comp_key = (product_id, batch_id, str(mfg_date), str(exp_date), warehouse_id, store_id)
-        self.inventory_composite_map[comp_key] = new_item
+        new_item = BatchItem(batch_id, product_id, mfg_date,
+                                  exp_date, entry_date, quantity, warehouse_id, store_id)
+        self.batch_map[batch_id] = new_item
+        comp_key = (product_id, batch_id_val, str(mfg_date), str(exp_date), warehouse_id, store_id)
+        self.batch_composite_map[comp_key] = new_item
         self.qty_bst.insert(quantity, new_item)
 
-    def update_inventory_quantity(self, item_id, new_quantity):
+    def update_batch_quantity(self, batch_id, new_quantity):
         """Cập nhật số lượng một lô hàng — dùng cho Undo/Redo UpdateQty"""
         if self.cursor is None or self.conn is None:
             raise ValueError("Service has no database connection")
-        item = self.inventory_map.get(item_id)
+        item = self.batch_map.get(batch_id)
         if item:
             item.quantity = new_quantity
-            self.cursor.execute("UPDATE inventory SET quantity=%s WHERE id=%s",
-                           (new_quantity, item_id))
+            self.cursor.execute("UPDATE batch SET quantity=%s WHERE batch_id=%s",
+                           (new_quantity, batch_id))
             self.conn.commit()
             return True
         return False
@@ -845,7 +845,7 @@ class Service:
         total_warehouses = len(self.warehouses_map)
         total_stores = len(self.stores_map)
         total_value = 0
-        for inv in self.inventory_map.values():
+        for inv in self.batch_map.values():
             prod = self.products_map.get(inv.product_id)
             if prod:
                 try:
@@ -857,7 +857,7 @@ class Service:
             "Total Products": {"value": str(total_products), "trend": "↗ +12%"},
             "Warehouses": {"value": str(max(total_warehouses, 1)), "trend": "↗ +1%"},
             "Stores": {"value": str(max(total_stores, 1)), "trend": "↗ +5%"},
-            "Inventory Value": {"value": value_str, "trend": "↗ +8%"},
+            "Batch Value": {"value": value_str, "trend": "↗ +8%"},
             "Low Stock Count": str(len(self.get_low_stock_items())),
             "Expiring Count": str(len(self.get_expiring_items()))
         }
