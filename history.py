@@ -17,13 +17,14 @@ class Command:
 
 class AddBatchCommand(Command):
     """Lệnh thêm lô hàng mới"""
-    def __init__(self, batch_id, product_id, mfg_date, exp_date, entry_date, quantity, warehouse_id):
+    def __init__(self, batch_id, product_id, mfg_date, exp_date, entry_date, quantity, unit_price, warehouse_id):
         self.batch_id = batch_id
         self.product_id = product_id
         self.mfg_date = mfg_date
         self.exp_date = exp_date
         self.entry_date = entry_date
         self.quantity = quantity
+        self.unit_price = unit_price
         self.warehouse_id = warehouse_id
 
     def undo(self, service):
@@ -33,7 +34,7 @@ class AddBatchCommand(Command):
         service.restore_batch_item(
             self.batch_id, self.product_id, self.batch_id,
             self.mfg_date, self.exp_date, self.entry_date, self.quantity,
-            self.warehouse_id
+            self.unit_price, self.warehouse_id
         )
 
     def description(self):

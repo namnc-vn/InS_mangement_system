@@ -43,6 +43,7 @@ CREATE TABLE batch (
     exp_date DATE,
     entry_date DATE,
     quantity INT,
+    unit_price FLOAT DEFAULT 0,
     warehouse_id VARCHAR(10) NULL,
     store_id VARCHAR(10) NULL,
     CONSTRAINT fk_batch_product FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,

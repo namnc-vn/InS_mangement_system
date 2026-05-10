@@ -7,6 +7,7 @@ from product import Product
 from category import Category
 from warehouse import Warehouse
 from store import Store
+from transfer_task import TransferTask
 
 # ==========================================
 # 1. TRIE — Auto-complete theo ID (product_id, batch_id)
@@ -210,9 +211,14 @@ class Service:
         self.low_stock_summary = {}             # {product_id: total_quantity} - aggregate
         self.expiring_summary = {}              # {product_id: count_expiring_batches} - aggregate
 
+        # --- Transfer Tasks ---
+        self.transfer_tasks = {}               # {task_id: TransferTask}
+        self.next_task_id = 1
+
         self.settings = {
             "low_stock_threshold": 15,
-            "expiring_days_threshold": 30
+            "expiring_days_threshold": 30,
+            "aging_days_threshold": 30
         }
 
     # =========================================================================
@@ -298,6 +304,22 @@ class Service:
                     pass
         return f"{prefix}{max_num + 1:02d}"
 
+    def batch_id_exists(self, batch_id):
+        if batch_id in self.batch_map:
+            return True
+        if self.cursor is None:
+            return False
+        self.cursor.execute("SELECT 1 FROM batch WHERE batch_id = %s LIMIT 1", (batch_id,))
+        return self.cursor.fetchone() is not None
+
+    def get_unique_batch_id(self, base_batch_id):
+        candidate = base_batch_id
+        suffix = 1
+        while self.batch_id_exists(candidate):
+            candidate = f"{base_batch_id}-{suffix}"
+            suffix += 1
+        return candidate
+
     # =========================================================================
     # CATEGORY
     # =========================================================================
@@ -365,10 +387,24 @@ class Service:
             return self.loaded_product_batches[product_id]
 
         # Query DB để load batch cho product này
-        self.cursor.execute("SELECT * FROM batch WHERE product_id = %s", (product_id,))
+        try:
+            self.cursor.execute(
+                "SELECT batch_id, product_id, mfg_date, exp_date, entry_date, quantity, unit_price, warehouse_id, store_id "
+                "FROM batch WHERE product_id = %s",
+                (product_id,)
+            )
+        except Exception as e:
+            if "Unknown column" in str(e) or "1054" in str(e):
+                self.cursor.execute(
+                    "SELECT batch_id, product_id, mfg_date, exp_date, entry_date, quantity, warehouse_id, store_id "
+                    "FROM batch WHERE product_id = %s",
+                    (product_id,)
+                )
+            else:
+                raise
         items = []
         for row in self.cursor.fetchall():
-            item = BatchItem(*row)
+            item = self._build_batch_item_from_row(row)
             items.append(item)
             # Thêm vào global batch_map (temporary)
             self.batch_map[item.batch_id] = item
@@ -406,11 +442,11 @@ class Service:
                 self.low_stock_summary[product_id] = row[0]
                 if bool(row[1]):
                     # Đếm số lô expiring
-                    cursor.execute("""
+                    self.cursor.execute("""
                         SELECT COUNT(*) FROM batch 
                         WHERE product_id = %s AND DATEDIFF(exp_date, CURDATE()) <= %s
                     """, (product_id, self.settings["expiring_days_threshold"]))
-                    self.expiring_summary[product_id] = cursor.fetchone()[0]
+                    self.expiring_summary[product_id] = self.cursor.fetchone()[0]
                 else:
                     self.expiring_summary[product_id] = 0
 
@@ -433,6 +469,22 @@ class Service:
         """Lấy lịch sử 5 sản phẩm vừa xem — Deque"""
         return [self.products_map.get(pid) for pid in reversed(self.recently_viewed)]
 
+    def _build_batch_item_from_row(self, row):
+        """Xây dựng BatchItem từ row, tương thích cả khi DB chưa có cột unit_price."""
+        if len(row) == 9:
+            return BatchItem(
+                batch_id=row[0], product_id=row[1], mfg_date=row[2], exp_date=row[3],
+                entry_date=row[4], quantity=row[5], unit_price=row[6],
+                warehouse_id=row[7], store_id=row[8]
+            )
+        if len(row) == 8:
+            return BatchItem(
+                batch_id=row[0], product_id=row[1], mfg_date=row[2], exp_date=row[3],
+                entry_date=row[4], quantity=row[5], unit_price=0,
+                warehouse_id=row[6], store_id=row[7]
+            )
+        raise ValueError(f"Unexpected batch row shape: {len(row)} columns")
+
     # =========================================================================
     # BATCH
     # =========================================================================
@@ -443,48 +495,68 @@ class Service:
             return self.batch_composite_map[comp_key]
         if self.cursor is None:
             return None
-        self.cursor.execute(
-            "SELECT * FROM batch WHERE product_id=%s AND batch_id=%s AND mfg_date=%s AND exp_date=%s AND warehouse_id=%s AND store_id=%s",
-            (product_id, batch_id, mfg_date, exp_date, warehouse_id, store_id)
-        )
+        try:
+            self.cursor.execute(
+                "SELECT batch_id, product_id, mfg_date, exp_date, entry_date, quantity, unit_price, warehouse_id, store_id "
+                "FROM batch WHERE product_id=%s AND batch_id=%s AND mfg_date=%s AND exp_date=%s AND warehouse_id=%s AND store_id=%s",
+                (product_id, batch_id, mfg_date, exp_date, warehouse_id, store_id)
+            )
+        except Exception as e:
+            if "Unknown column" in str(e) or "1054" in str(e):
+                self.cursor.execute(
+                    "SELECT batch_id, product_id, mfg_date, exp_date, entry_date, quantity, warehouse_id, store_id "
+                    "FROM batch WHERE product_id=%s AND batch_id=%s AND mfg_date=%s AND exp_date=%s AND warehouse_id=%s AND store_id=%s",
+                    (product_id, batch_id, mfg_date, exp_date, warehouse_id, store_id)
+                )
+            else:
+                raise
         row = self.cursor.fetchone()
         if not row:
             return None
-        item = BatchItem(*row)
+        item = self._build_batch_item_from_row(row)
         self.batch_map[item.batch_id] = item
         self.batch_composite_map[comp_key] = item
         self.batch_id_trie.insert(batch_id)
         return item
 
-    def add_batch_item(self, product_id, quantity, batch_id, mfg_date, exp_date, entry_date, warehouse_id, store_id=None):
+    def add_batch_item(self, product_id, quantity, batch_id, mfg_date, exp_date, entry_date, warehouse_id, store_id=None, unit_price=0):
         if self.cursor is None or self.conn is None:
             raise ValueError("Service has no database connection")
         existing = self.check_batch_exist(product_id, batch_id, mfg_date, exp_date, warehouse_id, store_id)
         if existing:
             existing.quantity += int(quantity)
-            self.cursor.execute("UPDATE batch SET quantity = %s WHERE batch_id = %s",
-                           (existing.quantity, existing.batch_id))
+            if unit_price is not None and float(unit_price) != float(existing.unit_price):
+                existing.unit_price = float(unit_price)
+                self.cursor.execute("UPDATE batch SET quantity = %s, unit_price = %s WHERE batch_id = %s",
+                                    (existing.quantity, existing.unit_price, existing.batch_id))
+            else:
+                self.cursor.execute("UPDATE batch SET quantity = %s WHERE batch_id = %s",
+                                    (existing.quantity, existing.batch_id))
             self.conn.commit()
             # Cập nhật aggregate data
             self.update_product_aggregates(product_id)
             return True, existing.batch_id
         else:
+            insert_batch_id = batch_id
+            if self.batch_id_exists(batch_id):
+                insert_batch_id = self.get_unique_batch_id(batch_id)
+
             self.cursor.execute(
-                "INSERT INTO batch (batch_id, product_id, mfg_date, exp_date, entry_date, quantity, warehouse_id, store_id) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-                (batch_id, product_id, mfg_date, exp_date, entry_date, quantity, warehouse_id, store_id)
+                "INSERT INTO batch (batch_id, product_id, mfg_date, exp_date, entry_date, quantity, unit_price, warehouse_id, store_id) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (insert_batch_id, product_id, mfg_date, exp_date, entry_date, quantity, unit_price, warehouse_id, store_id)
             )
             self.conn.commit()
-            new_item = BatchItem(batch_id, product_id, mfg_date,
-                                     exp_date, entry_date, int(quantity), warehouse_id, store_id)
-            self.batch_map[batch_id] = new_item
-            comp_key = (product_id, batch_id, str(mfg_date), str(exp_date), warehouse_id, store_id)
+            new_item = BatchItem(insert_batch_id, product_id, mfg_date,
+                                 exp_date, entry_date, int(quantity), unit_price, warehouse_id, store_id)
+            self.batch_map[insert_batch_id] = new_item
+            comp_key = (product_id, insert_batch_id, str(mfg_date), str(exp_date), warehouse_id, store_id)
             self.batch_composite_map[comp_key] = new_item
             self.qty_bst.insert(int(quantity), new_item)
-            self.batch_id_trie.insert(batch_id)
+            self.batch_id_trie.insert(insert_batch_id)
             # Cập nhật aggregate data
             self.update_product_aggregates(product_id)
-            return True, batch_id
+            return True, insert_batch_id
 
     def find_batch_by_product_id(self, product_id):
         if product_id not in self.loaded_product_batches:
@@ -554,31 +626,67 @@ class Service:
                 summary[st_id]["total_qty"] += inv.quantity
         return summary
 
-    def transfer_batch(self, batch_id, target_store_id, transfer_qty):
-        """Chuyển số lượng từ lô hàng trong Warehouse sang Store"""
+    def transfer_batch(self, batch_id, target_location_id, target_location_type, transfer_qty):
+        """Chuyển số lượng từ batch nguồn sang warehouse hoặc store đích."""
         if self.cursor is None or self.conn is None:
             raise ValueError("Service has no database connection")
+        if target_location_type not in ("warehouse", "store"):
+            raise ValueError("target_location_type phải là 'warehouse' hoặc 'store'")
+
         source_item = self.batch_map.get(batch_id)
-        if not source_item or source_item.quantity < transfer_qty:
-            return False, "Not enough quantity"
-        
-        # 1. Trừ số lượng kho (nếu = 0 thì xóa trong service, DB thì delete)
+        if not source_item:
+            try:
+                self.cursor.execute(
+                    "SELECT batch_id, product_id, mfg_date, exp_date, entry_date, quantity, unit_price, warehouse_id, store_id "
+                    "FROM batch WHERE batch_id = %s",
+                    (batch_id,)
+                )
+            except Exception as e:
+                if "Unknown column" in str(e) or "1054" in str(e):
+                    self.cursor.execute(
+                        "SELECT batch_id, product_id, mfg_date, exp_date, entry_date, quantity, warehouse_id, store_id "
+                        "FROM batch WHERE batch_id = %s",
+                        (batch_id,)
+                    )
+                else:
+                    raise
+            row = self.cursor.fetchone()
+            if not row:
+                return False, f"Batch {batch_id} không tồn tại"
+            source_item = self._build_batch_item_from_row(row)
+            self.batch_map[batch_id] = source_item
+
+        if source_item.quantity < transfer_qty:
+            return False, f"Không đủ số lượng. Batch {batch_id} chỉ có {source_item.quantity}, cần {transfer_qty}"
+
+        if target_location_type == "warehouse":
+            if source_item.warehouse_id == target_location_id:
+                return False, "Source và target warehouse phải khác nhau"
+        else:
+            if source_item.store_id == target_location_id:
+                return False, "Source và target store phải khác nhau"
+
+        source_warehouse_id = source_item.warehouse_id
+        source_store_id = source_item.store_id
+
         source_item.quantity -= transfer_qty
         if source_item.quantity > 0:
             self.cursor.execute("UPDATE batch SET quantity = %s WHERE batch_id = %s", (source_item.quantity, batch_id))
         else:
             self.cursor.execute("DELETE FROM batch WHERE batch_id = %s", (batch_id,))
-            self.batch_map.pop(batch_id)
+            self.batch_map.pop(batch_id, None)
             comp_key = (source_item.product_id, source_item.batch_id, str(source_item.mfg_date), str(source_item.exp_date), source_item.warehouse_id, source_item.store_id)
             self.batch_composite_map.pop(comp_key, None)
         self.conn.commit()
 
-        # 2. Thêm vào cửa hàng
         from datetime import date
         entry_date = date.today()
+        warehouse_id = target_location_id if target_location_type == "warehouse" else None
+        store_id = target_location_id if target_location_type == "store" else None
         _, target_batch_id = self.add_batch_item(
-            source_item.product_id, transfer_qty, source_item.batch_id, 
-            source_item.mfg_date, source_item.exp_date, entry_date, None, store_id=target_store_id
+            source_item.product_id, transfer_qty, source_item.batch_id,
+            source_item.mfg_date, source_item.exp_date, entry_date,
+            warehouse_id, store_id=store_id, unit_price=source_item.unit_price
         )
         return True, target_batch_id
 
@@ -669,7 +777,7 @@ class Service:
                                if isinstance(inv.exp_date, str) else inv.exp_date)
                         days_left = (exp - today).days
                         if days_left <= threshold:
-                            heapq.heappush(min_heap, (days_left, inv.id, inv))
+                            heapq.heappush(min_heap, (days_left, inv.batch_id, inv))
                     except Exception:
                         pass
 
@@ -734,18 +842,18 @@ class Service:
         return item
 
     def restore_batch_item(self, batch_id, product_id, batch_id_val,
-                               mfg_date, exp_date, entry_date, quantity, warehouse_id, store_id=None):
+                               mfg_date, exp_date, entry_date, quantity, unit_price=0, warehouse_id=None, store_id=None):
         """Chèn lại lô hàng với batch_id cũ — dùng cho Redo AddBatch"""
         if self.cursor is None or self.conn is None:
             raise ValueError("Service has no database connection")
         self.cursor.execute(
-            "INSERT INTO batch (batch_id, product_id, mfg_date, exp_date, entry_date, quantity, warehouse_id, store_id) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
-            (batch_id, product_id, mfg_date, exp_date, entry_date, quantity, warehouse_id, store_id)
+            "INSERT INTO batch (batch_id, product_id, mfg_date, exp_date, entry_date, quantity, unit_price, warehouse_id, store_id) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (batch_id, product_id, mfg_date, exp_date, entry_date, quantity, unit_price, warehouse_id, store_id)
         )
         self.conn.commit()
         new_item = BatchItem(batch_id, product_id, mfg_date,
-                                  exp_date, entry_date, quantity, warehouse_id, store_id)
+                                 exp_date, entry_date, quantity, unit_price, warehouse_id, store_id)
         self.batch_map[batch_id] = new_item
         comp_key = (product_id, batch_id_val, str(mfg_date), str(exp_date), warehouse_id, store_id)
         self.batch_composite_map[comp_key] = new_item
@@ -845,13 +953,32 @@ class Service:
         total_warehouses = len(self.warehouses_map)
         total_stores = len(self.stores_map)
         total_value = 0
-        for inv in self.batch_map.values():
-            prod = self.products_map.get(inv.product_id)
-            if prod:
+        if self.cursor:
+            self.cursor.execute(
+                "SELECT quantity, COALESCE(unit_price, 0), p.price FROM batch b LEFT JOIN products p ON b.product_id = p.id"
+            )
+            for qty, unit_price, price in self.cursor.fetchall():
                 try:
-                    total_value += inv.quantity * float(prod.price)
-                except ValueError:
-                    pass
+                    unit_price = float(unit_price or 0)
+                except Exception:
+                    unit_price = 0
+                if unit_price <= 0:
+                    try:
+                        unit_price = float(price or 0)
+                    except Exception:
+                        unit_price = 0
+                total_value += (qty or 0) * unit_price
+        else:
+            for inv in self.batch_map.values():
+                prod = self.products_map.get(inv.product_id)
+                unit_price = float(inv.unit_price or 0)
+                if unit_price <= 0 and prod:
+                    try:
+                        unit_price = float(prod.price or 0)
+                    except Exception:
+                        unit_price = 0
+                total_value += inv.quantity * unit_price
+
         value_str = f"${total_value/1000:.1f}k" if total_value >= 1000 else f"${total_value:.2f}"
         return {
             "Total Products": {"value": str(total_products), "trend": "↗ +12%"},
@@ -861,3 +988,325 @@ class Service:
             "Low Stock Count": str(len(self.get_low_stock_items())),
             "Expiring Count": str(len(self.get_expiring_items()))
         }
+
+    def _get_batch_inventory_rows(self):
+        records = []
+        if self.cursor:
+            self.cursor.execute(
+                "SELECT b.product_id, p.name, b.quantity, COALESCE(b.unit_price, 0), p.price, b.warehouse_id, b.store_id, b.batch_id, b.entry_date, b.exp_date "
+                "FROM batch b LEFT JOIN products p ON b.product_id = p.id"
+            )
+            for row in self.cursor.fetchall():
+                records.append(row)
+        else:
+            for inv in self.batch_map.values():
+                prod = self.products_map.get(inv.product_id)
+                price = getattr(prod, 'price', 0) if prod else 0
+                records.append((inv.product_id, getattr(prod, 'name', inv.product_id), inv.quantity,
+                                getattr(inv, 'unit_price', 0), price,
+                                inv.warehouse_id, inv.store_id, inv.batch_id, inv.entry_date, inv.exp_date))
+        return records
+
+    def get_current_inventory_report(self):
+        report = {}
+        for product_id, name, qty, unit_price, price, warehouse_id, store_id, batch_id, entry_date, exp_date in self._get_batch_inventory_rows():
+            if product_id not in report:
+                report[product_id] = {
+                    "product_id": product_id,
+                    "name": name or product_id,
+                    "total_qty": 0,
+                    "total_value": 0.0,
+                    "warehouse_qty": 0,
+                    "store_qty": 0,
+                    "batches": 0
+                }
+            try:
+                unit_price = float(unit_price or 0)
+            except Exception:
+                unit_price = 0
+            if unit_price <= 0:
+                try:
+                    unit_price = float(price or 0)
+                except Exception:
+                    unit_price = 0
+            report[product_id]["total_qty"] += qty or 0
+            report[product_id]["total_value"] += (qty or 0) * unit_price
+            report[product_id]["warehouse_qty"] += qty or 0 if warehouse_id else 0
+            report[product_id]["store_qty"] += qty or 0 if store_id else 0
+            report[product_id]["batches"] += 1
+
+        return sorted(report.values(), key=lambda x: x["total_qty"], reverse=True)
+
+    def get_products_with_highest_store_inventory(self, limit=10):
+        report = self.get_current_inventory_report()
+        stores = [item for item in report if item["store_qty"] > 0]
+        return sorted(stores, key=lambda x: x["store_qty"], reverse=True)[:limit]
+
+    def get_aging_inventory(self, min_days=None, limit=20):
+        if min_days is None:
+            min_days = self.settings["aging_days_threshold"]
+        rows = []
+        today = date.today()
+        for product_id, name, qty, unit_price, price, warehouse_id, store_id, batch_id, entry_date, exp_date in self._get_batch_inventory_rows():
+            if not entry_date:
+                continue
+            try:
+                if isinstance(entry_date, str):
+                    entry_date_obj = datetime.strptime(entry_date, "%Y-%m-%d").date()
+                else:
+                    entry_date_obj = entry_date
+                days_in_stock = (today - entry_date_obj).days
+            except Exception:
+                continue
+            if days_in_stock >= min_days:
+                rows.append({
+                    "batch_id": batch_id,
+                    "product_id": product_id,
+                    "name": name or product_id,
+                    "quantity": qty or 0,
+                    "entry_date": entry_date_obj,
+                    "days_in_stock": days_in_stock,
+                    "location": f"🏪 {store_id}" if store_id else f"🏢 {warehouse_id}" if warehouse_id else "Unknown"
+                })
+        return sorted(rows, key=lambda x: x["days_in_stock"], reverse=True)[:limit]
+
+    def get_inventory_value(self):
+        total_value = 0.0
+        for product_id, name, qty, unit_price, price, warehouse_id, store_id, batch_id, entry_date, exp_date in self._get_batch_inventory_rows():
+            try:
+                unit_price = float(unit_price or 0)
+            except Exception:
+                unit_price = 0
+            if unit_price <= 0:
+                try:
+                    unit_price = float(price or 0)
+                except Exception:
+                    unit_price = 0
+            total_value += (qty or 0) * unit_price
+        return total_value
+
+    # =========================================================================
+    # TRANSFER TASKS
+    # =========================================================================
+    def get_warehouse_batches_for_product(self, product_id, sort_strategy="fifo"):
+        """Lấy danh sách batch của product từ warehouse, sorted theo chiến lược
+        
+        sort_strategy:
+        - "fifo": expiry_date ASC, entry_date ASC, quantity ASC
+        - "lifo": expiry_date DESC, entry_date DESC, quantity DESC  
+        - "fefo": expiry_date ASC, entry_date ASC, quantity DESC (ưu tiên hết hạn sớm)
+        """
+        if self.cursor is None:
+            return []
+        
+        # Load tất cả batch của product từ warehouse
+        try:
+            self.cursor.execute(
+                "SELECT batch_id, product_id, mfg_date, exp_date, entry_date, quantity, unit_price, warehouse_id, store_id "
+                "FROM batch WHERE product_id = %s AND warehouse_id IS NOT NULL",
+                (product_id,)
+            )
+        except Exception as e:
+            if "Unknown column" in str(e) or "1054" in str(e):
+                self.cursor.execute(
+                    "SELECT batch_id, product_id, mfg_date, exp_date, entry_date, quantity, warehouse_id, store_id "
+                    "FROM batch WHERE product_id = %s AND warehouse_id IS NOT NULL",
+                    (product_id,)
+                )
+            else:
+                raise
+        
+        batches = []
+        for row in self.cursor.fetchall():
+            item = self._build_batch_item_from_row(row)
+            batches.append(item)
+            # Cache batch object so later chuyển task không bị missing
+            self.batch_map[item.batch_id] = item
+            comp_key = (item.product_id, item.batch_id,
+                        str(item.mfg_date), str(item.exp_date), item.warehouse_id, item.store_id)
+            self.batch_composite_map[comp_key] = item
+        
+        # Sort theo chiến lược
+        if sort_strategy == "fifo":
+            # FIFO: expiry_date ASC, entry_date ASC, quantity ASC
+            batches.sort(key=lambda b: (b.exp_date, b.entry_date, b.quantity))
+        elif sort_strategy == "lifo":
+            # LIFO: expiry_date DESC, entry_date DESC, quantity DESC
+            batches.sort(key=lambda b: (b.exp_date, b.entry_date, b.quantity), reverse=True)
+        elif sort_strategy == "fefo":
+            # FEFO: expiry_date ASC, entry_date ASC, quantity DESC (ưu tiên hết hạn sớm, lấy nhiều nhất)
+            batches.sort(key=lambda b: (b.exp_date, b.entry_date, -b.quantity))
+        
+        return batches
+
+    def get_product_location_ids(self, product_id, location_type):
+        items = self.load_product_batch(product_id)
+        ids = set()
+        for item in items:
+            if location_type == "warehouse" and item.warehouse_id:
+                ids.add(item.warehouse_id)
+            elif location_type == "store" and item.store_id:
+                ids.add(item.store_id)
+        return sorted(ids)
+
+    def get_product_batches_for_location(self, product_id, location_type, location_id, sort_strategy="fefo"):
+        items = self.load_product_batch(product_id)
+        if location_type not in ("warehouse", "store"):
+            return []
+        batches = []
+        for item in items:
+            if location_type == "warehouse" and item.warehouse_id == location_id:
+                batches.append(item)
+            elif location_type == "store" and item.store_id == location_id:
+                batches.append(item)
+        
+        if sort_strategy == "fifo":
+            batches.sort(key=lambda b: (b.exp_date, b.entry_date, b.quantity))
+        elif sort_strategy == "lifo":
+            batches.sort(key=lambda b: (b.exp_date, b.entry_date, b.quantity), reverse=True)
+        elif sort_strategy == "fefo":
+            batches.sort(key=lambda b: (b.exp_date, b.entry_date, -b.quantity))
+        return batches
+
+    def create_transfer_task(self, product_id, target_location_id, target_location_type, quantity, priority="normal", strategy="fefo", source_batch_id=None):
+        """Tạo task chuyển hàng - hỗ trợ warehouse/store làm đích"""
+        if target_location_type not in ("warehouse", "store"):
+            raise ValueError("target_location_type phải là 'warehouse' hoặc 'store'")
+
+        if source_batch_id:
+            selected_batch = self.batch_map.get(source_batch_id)
+            if not selected_batch:
+                try:
+                    self.cursor.execute(
+                        "SELECT batch_id, product_id, mfg_date, exp_date, entry_date, quantity, unit_price, warehouse_id, store_id "
+                        "FROM batch WHERE batch_id = %s",
+                        (source_batch_id,)
+                    )
+                except Exception as e:
+                    if "Unknown column" in str(e) or "1054" in str(e):
+                        self.cursor.execute(
+                            "SELECT batch_id, product_id, mfg_date, exp_date, entry_date, quantity, warehouse_id, store_id "
+                            "FROM batch WHERE batch_id = %s",
+                            (source_batch_id,)
+                        )
+                    else:
+                        raise
+                row = self.cursor.fetchone()
+                if not row:
+                    raise ValueError(f"Batch {source_batch_id} không tồn tại")
+                selected_batch = self._build_batch_item_from_row(row)
+                self.batch_map[source_batch_id] = selected_batch
+
+            if selected_batch.product_id != product_id:
+                raise ValueError(f"Batch {source_batch_id} không thuộc sản phẩm {product_id}")
+        else:
+            raise ValueError("source_batch_id là bắt buộc khi tạo task chuyển nội bộ")
+
+        if target_location_type == "warehouse":
+            if selected_batch.warehouse_id == target_location_id:
+                raise ValueError("Source và target warehouse phải khác nhau")
+        else:
+            if selected_batch.store_id == target_location_id:
+                raise ValueError("Source và target store phải khác nhau")
+        
+        task_id = f"T{self.next_task_id:03d}"
+        self.next_task_id += 1
+
+        task = TransferTask(task_id, product_id, selected_batch.batch_id, target_location_id,
+                            target_location_type, quantity, priority, strategy)
+        self.transfer_tasks[task_id] = task
+
+        return task
+
+    def execute_transfer_task(self, task_id):
+        """Thực hiện transfer task - cho phép retry task failed"""
+        task = self.transfer_tasks.get(task_id)
+        if not task:
+            raise ValueError(f"Task {task_id} không tồn tại")
+        
+        # Cho phép execute task với status "pending" hoặc "failed" (retry)
+        if task.status not in ("pending", "failed"):
+            raise ValueError(f"Task {task_id} đã được xử lý với trạng thái: {task.status}, không thể execute")
+        
+        try:
+            success, new_batch_id = self.transfer_batch(task.source_batch_id, task.target_location_id, task.target_location_type, task.quantity)
+            if success:
+                task.complete()
+                task.target_batch_id = new_batch_id
+                return True
+            else:
+                raise ValueError(f"Transfer thất bại cho task {task_id}: {new_batch_id}")
+        except Exception as e:
+            task.status = "failed"
+            raise e
+
+    def get_pending_tasks(self):
+        """Lấy danh sách tasks đang pending"""
+        return [task for task in self.transfer_tasks.values() if task.status == "pending"]
+
+    def suggest_batch_combinations(self, product_id, transfer_qty, source_location_type="warehouse", source_location_id=None, sort_strategy="fefo"):
+        """Gợi ý cách kết hợp batch tối ưu.
+
+        Trả về danh sách suggestions theo thứ tự ưu tiên.
+        """
+        if source_location_type not in ("warehouse", "store"):
+            return []
+        if source_location_id is None:
+            return []
+
+        batches = self.get_product_batches_for_location(product_id, source_location_type, source_location_id, sort_strategy=sort_strategy)
+        if not batches or transfer_qty <= 0:
+            return []
+
+        suggestions = []
+        total_available = sum(batch.quantity for batch in batches)
+        if total_available < transfer_qty:
+            return []
+
+        # Option 1: Single batch full pick hoặc split từ 1 batch
+        first_single = None
+        for batch in batches:
+            if batch.quantity >= transfer_qty:
+                first_single = {
+                    'option_type': 'full' if batch.quantity == transfer_qty else 'split',
+                    'batches': [
+                        {
+                            'batch_id': batch.batch_id,
+                            'batch_qty': batch.quantity,
+                            'take_qty': transfer_qty
+                        }
+                    ]
+                }
+                suggestions.append(first_single)
+                break
+
+        # Option 2: Multi-batch combine theo thứ tự ưu tiên
+        remaining = transfer_qty
+        combo = []
+        for batch in batches:
+            if remaining <= 0:
+                break
+            qty_to_take = min(batch.quantity, remaining)
+            combo.append({
+                'batch_id': batch.batch_id,
+                'batch_qty': batch.quantity,
+                'take_qty': qty_to_take
+            })
+            remaining -= qty_to_take
+
+        if remaining == 0:
+            if not (len(combo) == 1 and first_single and combo[0]['batch_id'] == first_single['batches'][0]['batch_id']
+                    and combo[0]['take_qty'] == first_single['batches'][0]['take_qty']):
+                option_type = 'merge' if len(combo) > 1 else (
+                    'full' if combo[0]['take_qty'] == combo[0]['batch_qty'] else 'split'
+                )
+                suggestions.append({
+                    'option_type': option_type,
+                    'batches': combo
+                })
+
+        return suggestions
+
+    def get_all_tasks(self):
+        """Lấy tất cả tasks"""
+        return list(self.transfer_tasks.values())

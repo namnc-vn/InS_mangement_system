@@ -98,6 +98,14 @@ class App(ctk.CTk):
         ctk.CTkButton(self.header_frame, text="➕ New Batch", fg_color=PRIMARY_COLOR, hover_color="#2563eb",
                       font=("Inter", 13, "bold"), height=40, command=self.open_add_batch_dialog).pack(side="right", padx=6)
 
+        ctk.CTkButton(self.header_frame, text="📋 Tasks", fg_color="#f3f4f6", text_color=TEXT_MAIN,
+                      hover_color="#e5e7eb", font=("Inter", 13, "bold"), height=40,
+                      command=self.open_task_manager_dialog).pack(side="right", padx=6)
+
+        ctk.CTkButton(self.header_frame, text="📈 Reports", fg_color="#f3f4f6", text_color=TEXT_MAIN,
+                      hover_color="#e5e7eb", font=("Inter", 13, "bold"), height=40,
+                      command=self.open_reports_dialog).pack(side="right", padx=6)
+
     def open_add_batch_dialog(self):
         """Hộp thoại thêm tồn kho — Autocomplete thực sự với Entry + Listbox nổi"""
         dialog = ctk.CTkToplevel(self)
@@ -217,6 +225,13 @@ class App(ctk.CTk):
         qty_ent = ctk.CTkEntry(dialog, width=470, height=38, font=("Inter", 12))
         qty_ent.pack(padx=20)
 
+        # 3.5. Unit Price
+        ctk.CTkLabel(dialog, text="Unit Price:",
+                     font=("Inter", 12, "bold")).pack(pady=(14, 2), padx=20, anchor="w")
+        price_ent = ctk.CTkEntry(dialog, width=470, height=38, font=("Inter", 12))
+        price_ent.pack(padx=20)
+        price_ent.insert(0, "0")  # Default value
+
         # 4 & 5. Date Pickers
         date_frame = ctk.CTkFrame(dialog, fg_color="transparent")
         date_frame.pack(fill="x", padx=20, pady=12)
@@ -259,13 +274,14 @@ class App(ctk.CTk):
                 exp   = exp_date.get_date().strftime("%Y-%m-%d")
                 wh    = wh_cb.get()
                 qty   = int(qty_ent.get())
+                unit_price = float(price_ent.get() or 0)
                 # Kiểm tra trước để biết là Update hay Insert (phục vụ Undo)
                 existing = self.service.check_batch_exist(p_id, b_id, mfg, exp, wh)
                 old_qty  = existing.quantity if existing else None
                 old_batch_id   = existing.batch_id if existing else None
 
                 entry_date = mfg  # Assume entry_date = mfg_date
-                self.service.add_batch_item(p_id, qty, b_id, mfg, exp, entry_date, wh)
+                self.service.add_batch_item(p_id, qty, b_id, mfg, exp, entry_date, wh, unit_price=unit_price)
 
                 # Tạo và đẩy Command vào history
                 if old_qty is not None:
@@ -273,7 +289,7 @@ class App(ctk.CTk):
                 else:
                     comp_key = (p_id, b_id, mfg, exp, wh)
                     new_item = self.service.batch_composite_map.get(comp_key)
-                    cmd = AddBatchCommand(new_item.batch_id, p_id, mfg, exp, entry_date, qty, wh)
+                    cmd = AddBatchCommand(new_item.batch_id, p_id, mfg, exp, entry_date, qty, unit_price, wh)
                 self.history.push(cmd)
                 self._update_undo_redo_buttons()
 
@@ -336,7 +352,7 @@ class App(ctk.CTk):
     def open_settings_dialog(self):
         dialog = ctk.CTkToplevel(self)
         dialog.title("Cài đặt Cảnh báo")
-        dialog.geometry("400x300")
+        dialog.geometry("400x400")
         dialog.attributes("-topmost", True)
         
         ctk.CTkLabel(dialog, text="Ngưỡng Số lượng thấp (Low Stock):", font=("Inter", 12)).pack(pady=(20, 5), padx=20, anchor="w")
@@ -348,10 +364,16 @@ class App(ctk.CTk):
         exp_entry = ctk.CTkEntry(dialog, width=360)
         exp_entry.insert(0, str(self.service.settings["expiring_days_threshold"]))
         exp_entry.pack(padx=20)
+
+        ctk.CTkLabel(dialog, text="Ngưỡng Tồn lâu (Ngày):", font=("Inter", 12)).pack(pady=(20, 5), padx=20, anchor="w")
+        aging_entry = ctk.CTkEntry(dialog, width=360)
+        aging_entry.insert(0, str(self.service.settings["aging_days_threshold"]))
+        aging_entry.pack(padx=20)
         
         def save():
             self.service.settings["low_stock_threshold"] = int(low_entry.get())
             self.service.settings["expiring_days_threshold"] = int(exp_entry.get())
+            self.service.settings["aging_days_threshold"] = int(aging_entry.get())
             self.build_kpi_cards()
             self.refresh_table()
             dialog.destroy()
@@ -408,6 +430,81 @@ class App(ctk.CTk):
         alert_card.bind("<Button-1>", lambda e: self.open_warning_dialog())
         top_alert.bind("<Button-1>", lambda e: self.open_warning_dialog())
         bot_alert.bind("<Button-1>", lambda e: self.open_warning_dialog())
+
+    def open_reports_dialog(self):
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Báo cáo kho")
+        dialog.geometry("1100x720")
+        dialog.attributes("-topmost", True)
+
+        header = ctk.CTkLabel(dialog, text="📈 Báo cáo kho tổng quan", font=("Inter", 20, "bold"), text_color=TEXT_MAIN)
+        header.pack(anchor="w", padx=24, pady=(20, 10))
+
+        stats = self.service.get_kpi_stats()
+        value_total = self.service.get_inventory_value()
+        report_summary = [
+            {"title": "Tổng tồn kho", "value": f"{sum(item['total_qty'] for item in self.service.get_current_inventory_report())}", "color": "#2563eb"},
+            {"title": "Giá trị kho", "value": f"${value_total:,.2f}", "color": "#0f766e"},
+            {"title": "Sản phẩm nhiều hàng tại store", "value": f"{len(self.service.get_products_with_highest_store_inventory(10))}", "color": "#c026d3"},
+            {"title": "Hàng tồn lâu", "value": f"{len(self.service.get_aging_inventory(min_days=self.service.settings['aging_days_threshold'], limit=100))}", "color": "#b91c1c"}
+        ]
+
+        summary_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        summary_frame.pack(fill="x", padx=24, pady=(0, 20))
+        for idx, card in enumerate(report_summary):
+            card_frame = ctk.CTkFrame(summary_frame, fg_color=BG_CARD, corner_radius=14, border_width=1, border_color="#e5e7eb")
+            card_frame.grid(row=0, column=idx, padx=10, sticky="nsew")
+            summary_frame.grid_columnconfigure(idx, weight=1)
+            ctk.CTkLabel(card_frame, text=card["title"], font=("Inter", 13), text_color=TEXT_SUB).pack(anchor="w", padx=20, pady=(20, 6))
+            ctk.CTkLabel(card_frame, text=card["value"], font=("Inter", 26, "bold"), text_color=card["color"]).pack(anchor="w", padx=20, pady=(0, 20))
+
+        content_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        content_frame.pack(fill="both", expand=True, padx=24, pady=(0, 20))
+        content_frame.grid_columnconfigure(0, weight=1)
+        content_frame.grid_columnconfigure(1, weight=1)
+
+        # Current inventory by product
+        inv_frame = ctk.CTkFrame(content_frame, fg_color=BG_CARD, corner_radius=14, border_width=1, border_color="#e5e7eb")
+        inv_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 10), pady=10)
+        ctk.CTkLabel(inv_frame, text="Tồn kho hiện tại", font=("Inter", 16, "bold"), text_color=TEXT_MAIN).pack(anchor="w", padx=20, pady=(20, 10))
+        inv_tree = ttk.Treeview(inv_frame, columns=("Product", "Qty", "Value", "Warehouse", "Store"), show="headings", height=9)
+        for col in ("Product", "Qty", "Value", "Warehouse", "Store"):
+            inv_tree.heading(col, text=col)
+            inv_tree.column(col, anchor="center" if col not in ("Product",) else "w", width=120)
+        inv_tree.pack(fill="both", expand=True, padx=20, pady=(0, 20))
+
+        inventory = self.service.get_current_inventory_report()
+        for item in inventory[:20]:
+            inv_tree.insert("", "end", values=(item["name"], item["total_qty"], f'${item["total_value"]:.2f}', item["warehouse_qty"], item["store_qty"]))
+
+        # Best selling products in stores
+        best_frame = ctk.CTkFrame(content_frame, fg_color=BG_CARD, corner_radius=14, border_width=1, border_color="#e5e7eb")
+        best_frame.grid(row=0, column=1, sticky="nsew", padx=(10, 0), pady=10)
+        ctk.CTkLabel(best_frame, text="Sản phẩm nhiều hàng tại store", font=("Inter", 16, "bold"), text_color=TEXT_MAIN).pack(anchor="w", padx=20, pady=(20, 10))
+        best_tree = ttk.Treeview(best_frame, columns=("Product", "Store Qty", "Warehouse Qty"), show="headings", height=9)
+        for col in ("Product", "Store Qty", "Warehouse Qty"):
+            best_tree.heading(col, text=col)
+            best_tree.column(col, anchor="center" if col != "Product" else "w", width=140)
+        best_tree.pack(fill="both", expand=True, padx=20, pady=(0, 20))
+
+        best_selling = self.service.get_products_with_highest_store_inventory(15)
+        for item in best_selling:
+            best_tree.insert("", "end", values=(item["name"], item["store_qty"], item["warehouse_qty"]))
+
+        aging_frame = ctk.CTkFrame(dialog, fg_color=BG_CARD, corner_radius=14, border_width=1, border_color="#e5e7eb")
+        aging_frame.pack(fill="both", expand=True, padx=24, pady=(0, 20))
+        ctk.CTkLabel(aging_frame, text="Hàng tồn lâu", font=("Inter", 16, "bold"), text_color=TEXT_MAIN).pack(anchor="w", padx=20, pady=(20, 10))
+        aging_tree = ttk.Treeview(aging_frame, columns=("Batch", "Product", "Location", "Qty", "Entry Date", "Days"), show="headings", height=10)
+        for col in ("Batch", "Product", "Location", "Qty", "Entry Date", "Days"):
+            aging_tree.heading(col, text=col)
+            aging_tree.column(col, anchor="center" if col not in ("Product", "Location") else "w", width=120)
+        aging_tree.pack(fill="both", expand=True, padx=20, pady=(0, 20))
+
+        aging_items = self.service.get_aging_inventory(min_days=self.service.settings["aging_days_threshold"], limit=25)
+        for item in aging_items:
+            aging_tree.insert("", "end", values=(item["batch_id"], item["name"], item["location"], item["quantity"], item["entry_date"], item["days_in_stock"]))
+
+        ctk.CTkButton(dialog, text="Đóng", fg_color="#6b7280", hover_color="#525252", command=dialog.destroy).pack(pady=16)
 
     def open_warning_dialog(self):
         dialog = ctk.CTkToplevel(self)
@@ -545,6 +642,9 @@ class App(ctk.CTk):
             ctk.CTkButton(button_frame, text="📋 Show Batch", fg_color="#8b5cf6", hover_color="#7c3aed",
                           font=("Inter", 13, "bold"), height=38,
                           command=self.open_batch_dialog_for_products).pack(side="left", padx=5)
+            ctk.CTkButton(button_frame, text="🔁 Create Transfer", fg_color="#8b5cf6", hover_color="#7c3aed",
+                          font=("Inter", 13, "bold"), height=38,
+                          command=self.open_transfer_dialog).pack(side="left", padx=5)
         elif self.active_tab == "Warehouse":
             ctk.CTkButton(toolbar, text="➕ Add Warehouse", fg_color="#10b981", hover_color="#059669",
                           font=("Inter", 13, "bold"), height=38,
@@ -751,7 +851,7 @@ class App(ctk.CTk):
             return
         
         # Treeview để hiển thị batch
-        cols = ("Batch ID", "Product", "MFG Date", "Quantity", "Location", "Exp Date", "Entry Date", "Status")
+        cols = ("Batch ID", "Product", "MFG Date", "Quantity", "Unit Price", "Location", "Exp Date", "Entry Date", "Status")
         tree = ttk.Treeview(dialog, columns=cols, show="headings", height=20)
         for col in cols:
             tree.heading(col, text=col.upper())
@@ -769,7 +869,7 @@ class App(ctk.CTk):
             prod_name = getattr(self.service.products_map.get(inv.product_id), 'name', inv.product_id)
             status_text, status_tag = self._format_batch_status_and_tag(inv, low_stock_threshold)
             loc = f"🏪 {inv.store_id}" if inv.store_id else f"🏢 {inv.warehouse_id}"
-            tree.insert("", "end", values=(inv.batch_id, prod_name, inv.mfg_date, inv.quantity, loc, inv.exp_date, inv.entry_date, status_text), tags=(status_tag,))
+            tree.insert("", "end", values=(inv.batch_id, prod_name, inv.mfg_date, inv.quantity, inv.unit_price, loc, inv.exp_date, inv.entry_date, status_text), tags=(status_tag,))
         
         tree.pack(fill="both", expand=True, padx=10, pady=10)
     
@@ -1035,73 +1135,232 @@ class App(ctk.CTk):
 
 
     def open_transfer_dialog(self):
+        if self.active_tab != "Product":
+            messagebox.showwarning("Warning", "Vui lòng mở tab Product và chọn một sản phẩm để tạo task chuyển hàng!")
+            return
+
         selected = self.tree.selection()
         if not selected:
-            messagebox.showwarning("Warning", "Vui lòng chọn 1 lô hàng từ Warehouse để luân chuyển!")
+            messagebox.showwarning("Warning", "Vui lòng chọn 1 sản phẩm để tạo task chuyển hàng!")
             return
-        
+
         item_data = self.tree.item(selected[0])['values']
-        item_id = item_data[0] # ID nằm ở cột đầu tiên
-        # Lấy từ service
-        source_item = self.service.batch_map.get(item_id)
-        if not source_item or not source_item.warehouse_id:
-            messagebox.showwarning("Warning", "Chỉ có thể luân chuyển lô hàng từ Warehouse (Kho) xuống Store!")
+        if len(item_data) < 2:
+            messagebox.showwarning("Warning", "Dữ liệu chọn không hợp lệ. Vui lòng chọn một sản phẩm.")
             return
+
+        product_id = item_data[1]  # ID nằm ở cột thứ 2 trong Product tab
 
         dialog = ctk.CTkToplevel(self)
-        dialog.title("Transfer to Store")
-        dialog.geometry("400x350")
+        dialog.title("Create Transfer Task")
+        dialog.geometry("500x350")
         dialog.attributes("-topmost", True)
 
-        ctk.CTkLabel(dialog, text=f"Transferring Batch: {source_item.batch_id}", font=("Inter", 13, "bold")).pack(pady=(20, 10))
-        ctk.CTkLabel(dialog, text=f"Available Quantity: {source_item.quantity}", font=("Inter", 12)).pack(pady=(0, 15))
+        ctk.CTkLabel(dialog, text=f"Transfer Task: {product_id}", font=("Inter", 14, "bold")).pack(pady=(20, 10))
 
-        ctk.CTkLabel(dialog, text="Target Store ID:", font=("Inter", 12, "bold")).pack(anchor="w", padx=20)
-        store_ids = list(self.service.stores_map.keys())
-        if not store_ids:
-            messagebox.showwarning("Warning", "Hệ thống chưa có Cửa hàng nào. Vui lòng thêm Store trước.")
-            dialog.destroy()
-            return
-        
-        store_cb = ctk.CTkComboBox(dialog, values=store_ids, width=360)
-        store_cb.pack(padx=20, pady=(5, 15))
+        # Quantity input
+        qty_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        qty_frame.pack(fill="x", padx=20, pady=(10, 5))
+        ctk.CTkLabel(qty_frame, text="Quantity to Transfer:", font=("Inter", 12, "bold")).pack(anchor="w")
+        qty_ent = ctk.CTkEntry(qty_frame, width=400, placeholder_text="Nhập số lượng cần chuyển")
+        qty_ent.pack(pady=(5, 0))
 
-        ctk.CTkLabel(dialog, text="Quantity to Transfer:", font=("Inter", 12, "bold")).pack(anchor="w", padx=20)
-        qty_ent = ctk.CTkEntry(dialog, width=360, placeholder_text=f"Max: {source_item.quantity}")
-        qty_ent.pack(padx=20, pady=(5, 20))
+        # Transfer mode selection
+        mode_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        mode_frame.pack(fill="x", padx=20, pady=(10, 5))
+        ctk.CTkLabel(mode_frame, text="Transfer Type:", font=("Inter", 12, "bold")).pack(anchor="w")
+        type_cb = ctk.CTkComboBox(mode_frame, values=["warehouse", "store"], width=400,
+                                   command=lambda val: refresh_locations())
+        type_cb.pack(pady=(5, 0))
+        type_cb.set("warehouse")
 
-        def confirm_transfer():
-            target_store = store_cb.get()
-            qty_str = qty_ent.get()
-            if not qty_str.isdigit():
-                messagebox.showerror("Lỗi", "Số lượng phải là số nguyên!", parent=dialog)
+        # Source Location selection
+        source_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        source_frame.pack(fill="x", padx=20, pady=(10, 5))
+        ctk.CTkLabel(source_frame, text="Source Location:", font=("Inter", 12, "bold")).pack(anchor="w")
+        source_cb = ctk.CTkComboBox(source_frame, values=[], width=400,
+                                    command=lambda val: update_target_locations())
+        source_cb.pack(pady=(5, 0))
+
+        # Target Location selection
+        target_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        target_frame.pack(fill="x", padx=20, pady=(10, 5))
+        ctk.CTkLabel(target_frame, text="Target Location:", font=("Inter", 12, "bold")).pack(anchor="w")
+        target_cb = ctk.CTkComboBox(target_frame, values=[], width=400,
+                                    command=lambda val: show_suggestion())
+        target_cb.pack(pady=(5, 0))
+
+        suggestions_data = []
+
+        def update_target_locations():
+            location_type = type_cb.get()
+            source_location = source_cb.get()
+            if location_type == "warehouse":
+                target_ids = [wid for wid in self.service.warehouses_map.keys() if wid != source_location]
+            else:
+                target_ids = [sid for sid in self.service.stores_map.keys() if sid != source_location]
+            target_cb.configure(values=target_ids)
+            if target_ids:
+                target_cb.set(target_ids[0])
+
+        def refresh_locations():
+            location_type = type_cb.get()
+            source_ids = self.service.get_product_location_ids(product_id, location_type)
+            if not source_ids:
+                source_cb.configure(values=[])
+                target_cb.configure(values=[])
+                suggestion_label.configure(text=f"Không tìm thấy nguồn {location_type} có sản phẩm {product_id}")
+                suggestions_data.clear()
                 return
+            source_cb.configure(values=source_ids)
+            source_cb.set(source_ids[0])
+            update_target_locations()
+
+        # CTkComboBox uses command callback, not Tk virtual event binding.
+
+        # Suggestion frame
+        suggestion_frame = ctk.CTkFrame(dialog, fg_color="#f0fdf4", corner_radius=8, border_width=1, border_color="#86efac")
+        suggestion_frame.pack(fill="both", expand=True, padx=20, pady=(10, 20))
+
+        suggestion_label = ctk.CTkLabel(suggestion_frame, text="Gợi ý kết hợp batch sẽ hiển thị ở đây", 
+                                       font=("Inter", 11), text_color="#166534", wraplength=440, justify="left")
+        suggestion_label.pack(padx=15, pady=(15, 0), anchor="w")
+
+        options_container = ctk.CTkFrame(suggestion_frame, fg_color="transparent")
+        options_container.pack(fill="both", expand=True, padx=10, pady=(10, 10))
+
+        def format_combo_text(combo):
+            lines = []
+            if combo['option_type'] == 'full':
+                batch = combo['batches'][0]
+                lines.append(f"Nên lấy full batch {batch['batch_id']} ({batch['batch_qty']})")
+            elif combo['option_type'] == 'split':
+                batch = combo['batches'][0]
+                remaining_qty = batch['batch_qty'] - batch['take_qty']
+                lines.append(
+                    f"Split batch {batch['batch_id']} ({batch['batch_qty']}) thành batch {batch['batch_id']} ({batch['take_qty']}) [transfer] "
+                    f"và batch {batch['batch_id']} ({remaining_qty})"
+                )
+            else:
+                parts = []
+                for batch in combo['batches']:
+                    if batch['take_qty'] == batch['batch_qty']:
+                        parts.append(f"full batch {batch['batch_id']} ({batch['batch_qty']})")
+                    else:
+                        remain_qty = batch['batch_qty'] - batch['take_qty']
+                        parts.append(
+                            f"split batch {batch['batch_id']} ({batch['batch_qty']}) thành batch {batch['batch_id']} ({batch['take_qty']}) [transfer] "
+                            f"và batch {batch['batch_id']} ({remain_qty})"
+                        )
+                lines.append("Nên lấy " + " và ".join(parts))
+            return "\n".join(lines)
+
+        def create_task_for_option(idx):
+            if not suggestions_data or idx < 0 or idx >= len(suggestions_data):
+                messagebox.showerror("Lỗi", "Option không hợp lệ", parent=dialog)
+                return
+            target_location = target_cb.get()
+            location_type = type_cb.get()
+            if not target_location:
+                messagebox.showerror("Lỗi", "Vui lòng chọn đích chuyển hàng!", parent=dialog)
+                return
+            best_combo = suggestions_data[idx]
+            try:
+                task_ids = []
+                for batch_info in best_combo['batches']:
+                    task = self.service.create_transfer_task(
+                        product_id, target_location, location_type, batch_info['take_qty'], 
+                        priority="normal", strategy="fefo",
+                        source_batch_id=batch_info['batch_id']
+                    )
+                    task_ids.append(task.task_id)
+
+                dialog.destroy()
+                msg = f"✅ Đã tạo task(s) chuyển hàng:\n"
+                if best_combo['option_type'] == 'full':
+                    batch = best_combo['batches'][0]
+                    msg += f"Task {task_ids[0]}: full batch {batch['batch_id']} ({batch['take_qty']})"
+                else:
+                    msg += f"Tasks: {', '.join(task_ids)}\n"
+                    for batch_info in best_combo['batches']:
+                        msg += f"  - {batch_info['batch_id']}: {batch_info['take_qty']} sản phẩm\n"
+                messagebox.showinfo("Success", msg)
+                self.open_task_manager_dialog()
+            except Exception as e:
+                messagebox.showerror("Lỗi", f"Lỗi tạo task: {e}", parent=dialog)
+
+        def render_suggestions():
+            for child in options_container.winfo_children():
+                child.destroy()
+
+            if not suggestions_data:
+                return
+
+            for idx, combo in enumerate(suggestions_data):
+                option_frame = ctk.CTkFrame(options_container, fg_color="white",
+                                            corner_radius=10, border_width=1,
+                                            border_color="#d1fae5")
+                option_frame.pack(fill="x", padx=10, pady=6)
+
+                text = f"Option {idx + 1}:\n{format_combo_text(combo)}"
+                ctk.CTkLabel(option_frame, text=text, font=("Inter", 11),
+                             text_color="#0f766e", wraplength=360,
+                             justify="left").pack(side="left", fill="both", expand=True, padx=(12, 8), pady=12)
+
+                btn = ctk.CTkButton(option_frame, text="Tạo task", width=90,
+                                    fg_color="#10b981", hover_color="#059669",
+                                    font=("Inter", 11, "bold"),
+                                    command=lambda i=idx: create_task_for_option(i))
+                btn.pack(side="right", padx=10, pady=10)
+
+        def show_suggestion():
+            qty_str = qty_ent.get().strip()
+            if not qty_str or not qty_str.isdigit():
+                suggestion_label.configure(text="⚠️ Vui lòng nhập số lượng hợp lệ (số nguyên > 0)")
+                suggestions_data.clear()
+                render_suggestions()
+                return
+            
             transfer_qty = int(qty_str)
-            if transfer_qty <= 0 or transfer_qty > source_item.quantity:
-                messagebox.showerror("Lỗi", "Số lượng không hợp lệ!", parent=dialog)
+            if transfer_qty <= 0:
+                suggestion_label.configure(text="⚠️ Số lượng phải > 0")
+                suggestions_data.clear()
+                render_suggestions()
+                return
+
+            source_location = source_cb.get()
+            location_type = type_cb.get()
+            if not source_location:
+                suggestion_label.configure(text="⚠️ Vui lòng chọn nguồn chuyển hàng")
+                suggestions_data.clear()
+                render_suggestions()
                 return
             
             try:
-                success, new_batch_id = self.service.transfer_batch(source_item.batch_id, target_store, transfer_qty)
-                if success:
-                    # Truyền Undo/Redo command
-                    self.history.push(TransferBatchCommand(
-                        source_batch_id=source_item.batch_id,
-                        target_batch_id=new_batch_id,
-                        target_store_id=target_store,
-                        transfer_qty=transfer_qty
-                    ))
-                    self._update_undo_redo_buttons()
-                    self.refresh_table()
-                    dialog.destroy()
-                    messagebox.showinfo("Success", f"Đã luân chuyển {transfer_qty} sản phẩm sang Store '{target_store}'!")
-                else:
-                    messagebox.showerror("Lỗi", "Chuyển kho thất bại!", parent=dialog)
+                suggestions_data[:] = self.service.suggest_batch_combinations(product_id, transfer_qty, source_location_type=location_type, source_location_id=source_location, sort_strategy="fefo")
+                if not suggestions_data:
+                    suggestion_label.configure(text="❌ Không có batch nào ở nguồn hoặc không đủ số lượng")
+                    render_suggestions()
+                    return
+                
+                suggestion_label.configure(text="Chọn option phù hợp để tạo task chuyển hàng:")
+                render_suggestions()
             except Exception as e:
-                messagebox.showerror("Lỗi", f"Lỗi transfer: {e}", parent=dialog)
+                suggestion_label.configure(text=f"❌ Lỗi: {e}")
+                suggestions_data.clear()
+                render_suggestions()
 
-        ctk.CTkButton(dialog, text="Confirm Transfer", fg_color="#8b5cf6", hover_color="#7c3aed",
-                      font=("Inter", 13, "bold"), command=confirm_transfer).pack(pady=10)
+        qty_ent.bind("<KeyRelease>", lambda e: show_suggestion())
+        target_cb.bind("<<ComboboxSelected>>", lambda e: show_suggestion())
+
+        refresh_locations()
+
+        qty_ent.bind("<KeyRelease>", lambda e: show_suggestion())
+
+        btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=20, pady=(0, 20))
+        ctk.CTkButton(btn_frame, text="Refresh", fg_color="#6b7280", hover_color="#4b5563",
+                      font=("Inter", 12, "bold"), command=show_suggestion).pack(side="right", padx=5)
 
     def open_batch_dialog_for_categories(self):
         """Hiển thị hộp thoại batch của các category được chọn"""
@@ -1129,7 +1388,7 @@ class App(ctk.CTk):
             return
         
         # Treeview để hiển thị batch
-        cols = ("Batch ID", "Product", "MFG Date", "Quantity", "Location", "Exp Date", "Entry Date", "Status")
+        cols = ("Batch ID", "Product", "MFG Date", "Quantity", "Unit Price", "Location", "Exp Date", "Entry Date", "Status")
         tree = ttk.Treeview(dialog, columns=cols, show="headings", height=20)
         for col in cols:
             tree.heading(col, text=col.upper())
@@ -1146,7 +1405,7 @@ class App(ctk.CTk):
             prod_name = getattr(self.service.products_map.get(inv.product_id), 'name', inv.product_id)
             status_text, status_tag = self._format_batch_status_and_tag(inv, low_stock_threshold)
             loc = f"🏪 {inv.store_id}" if inv.store_id else f"🏢 {inv.warehouse_id}"
-            tree.insert("", "end", values=(inv.batch_id, prod_name, inv.mfg_date, inv.quantity, loc, inv.exp_date, inv.entry_date, status_text), tags=(status_tag,))
+            tree.insert("", "end", values=(inv.batch_id, prod_name, inv.mfg_date, inv.quantity, inv.unit_price, loc, inv.exp_date, inv.entry_date, status_text), tags=(status_tag,))
         
         tree.pack(fill="both", expand=True, padx=10, pady=10)
 
@@ -1173,7 +1432,7 @@ class App(ctk.CTk):
             return
         
         # Treeview để hiển thị batch
-        cols = ("Batch ID", "Product", "MFG Date", "Quantity", "Location", "Exp Date", "Entry Date", "Status")
+        cols = ("Batch ID", "Product", "MFG Date", "Quantity", "Unit Price", "Location", "Exp Date", "Entry Date", "Status")
         tree = ttk.Treeview(dialog, columns=cols, show="headings", height=20)
         for col in cols:
             tree.heading(col, text=col.upper())
@@ -1190,7 +1449,7 @@ class App(ctk.CTk):
             prod_name = getattr(self.service.products_map.get(inv.product_id), 'name', inv.product_id)
             status_text, status_tag = self._format_batch_status_and_tag(inv, low_stock_threshold)
             loc = f"🏪 {inv.store_id}" if inv.store_id else f"🏢 {inv.warehouse_id}"
-            tree.insert("", "end", values=(inv.batch_id, prod_name, inv.mfg_date, inv.quantity, loc, inv.exp_date, inv.entry_date, status_text), tags=(status_tag,))
+            tree.insert("", "end", values=(inv.batch_id, prod_name, inv.mfg_date, inv.quantity, inv.unit_price, loc, inv.exp_date, inv.entry_date, status_text), tags=(status_tag,))
         
         tree.pack(fill="both", expand=True, padx=10, pady=10)
     
@@ -1236,6 +1495,94 @@ class App(ctk.CTk):
         else:
             self.btn_redo.configure(state="disabled", text_color="#9ca3af",
                                     text="↪ Redo")
+
+    def open_task_manager_dialog(self):
+        """Dialog quản lý transfer tasks"""
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Transfer Task Manager")
+        dialog.geometry("1000x600")
+        dialog.attributes("-topmost", True)
+
+        ctk.CTkLabel(dialog, text="Transfer Tasks", font=("Inter", 16, "bold")).pack(pady=(20, 10))
+
+        # Frame chứa treeview
+        tree_frame = ctk.CTkFrame(dialog, fg_color=BG_CARD)
+        tree_frame.pack(fill="both", expand=True, padx=20, pady=(0, 20))
+
+        # Treeview hiển thị tasks
+        cols = ("Task ID", "Product", "Source Batch", "Destination", "Quantity", "Priority", "Strategy", "Status", "Created At")
+        tree = ttk.Treeview(tree_frame, columns=cols, show="headings", height=20)
+        for col in cols:
+            tree.heading(col, text=col.upper())
+            tree.column(col, anchor="center", width=100)
+        tree.column("Task ID", width=80)
+        tree.column("Product", width=120)
+        tree.column("Source Batch", width=120)
+        tree.column("Destination", width=180)
+        tree.column("Quantity", width=80)
+        tree.column("Priority", width=80)
+        tree.column("Strategy", width=90)
+        tree.column("Status", width=100)
+        tree.column("Created At", width=120)
+
+        # Thêm data
+        tasks = self.service.get_all_tasks()
+        for task in tasks:
+            created_str = task.created_at.strftime("%Y-%m-%d %H:%M") if task.created_at else ""
+            dest_label = f"{task.target_location_type}:{task.target_location_id}" if task.target_location_type else task.target_location_id
+            tree.insert("", "end", values=(task.task_id, task.product_id, task.source_batch_id, 
+                                          dest_label, task.quantity, task.priority, task.strategy,
+                                          task.status, created_str))
+
+        tree.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Frame chứa buttons
+        btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=20, pady=(0, 20))
+
+        def execute_selected_task():
+            selected = tree.selection()
+            if not selected:
+                messagebox.showwarning("Warning", "Vui lòng chọn 1 task để thực hiện!", parent=dialog)
+                return
+            
+            item = tree.item(selected[0])
+            task_id = item['values'][0]
+            
+            try:
+                self.service.execute_transfer_task(task_id)
+                messagebox.showinfo("Success", f"Đã thực hiện task {task_id} thành công!", parent=dialog)
+                dialog.destroy()
+                self.refresh_table()
+                # Mở lại dialog để cập nhật
+                self.open_task_manager_dialog()
+            except Exception as e:
+                messagebox.showerror("Lỗi", f"Lỗi thực hiện task: {e}", parent=dialog)
+
+        def cancel_selected_task():
+            selected = tree.selection()
+            if not selected:
+                messagebox.showwarning("Warning", "Vui lòng chọn 1 task để hủy!", parent=dialog)
+                return
+            
+            item = tree.item(selected[0])
+            task_id = item['values'][0]
+            
+            if messagebox.askyesno("Confirm", f"Bạn có chắc muốn hủy task {task_id}?", parent=dialog):
+                task = self.service.transfer_tasks.get(task_id)
+                if task:
+                    task.cancel()
+                    dialog.destroy()
+                    self.open_task_manager_dialog()
+
+        ctk.CTkButton(btn_frame, text="Execute Task", fg_color="#10b981", hover_color="#059669",
+                      font=("Inter", 12, "bold"), command=execute_selected_task).pack(side="left", padx=(0, 10))
+        
+        ctk.CTkButton(btn_frame, text="Cancel Task", fg_color="#ef4444", hover_color="#dc2626",
+                      font=("Inter", 12, "bold"), command=cancel_selected_task).pack(side="left", padx=(0, 10))
+        
+        ctk.CTkButton(btn_frame, text="Refresh", fg_color="#6b7280", hover_color="#4b5563",
+                      font=("Inter", 12, "bold"), command=lambda: [dialog.destroy(), self.open_task_manager_dialog()]).pack(side="right")
 
 
 if __name__ == "__main__":

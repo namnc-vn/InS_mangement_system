@@ -113,10 +113,11 @@ def main():
             mfg_date = input(" Ngày sản xuất (YYYY-MM-DD): ").strip()
             exp_date = input(" Hạn sử dụng (YYYY-MM-DD): ").strip()
             warehouse_id = input(" Mã kho: ").strip()
+            unit_price = float(input(" Đơn giá (unit_price): ").strip() or 0)
             
             from datetime import date
             entry_date = date.today()
-            if service.add_batch_item(prod_id, quantity, batch_id, mfg_date, exp_date, entry_date, warehouse_id):
+            if service.add_batch_item(prod_id, quantity, batch_id, mfg_date, exp_date, entry_date, warehouse_id, unit_price=unit_price):
                 print("-> Nhập kho thành công!")
             else:
                 print("-> Đã xảy ra lỗi khi nhập kho.")
@@ -216,9 +217,9 @@ def main():
             else:
                 print(f"-> CẢNH BÁO: Phát hiện {len(exp_warnings)} lô hàng cần chú ý:")
                 
-                # Batch ID của bảng batch
-                print(f"{'Batch ID':<10} | {'MÃ LÔ':<12} | {'TÊN SẢN PHẨM':<25} | {'HẠN SỬ DỤNG':<12} | {'TÌNH TRẠNG':<15} | {'SỐ LƯỢNG'}")
-                print("-" * 90) 
+                # Batch ID của lô hàng
+                print(f"{'BATCH ID':<12} | {'TÊN SẢN PHẨM':<25} | {'HẠN SỬ DỤNG':<12} | {'TÌNH TRẠNG':<15} | {'SỐ LƯỢNG'}")
+                print("-" * 85)
                 
                 for w in exp_warnings:
                     days_left = w['days_left']
@@ -230,8 +231,7 @@ def main():
                     else:
                         status = f"Còn {days_left} ngày"
                         
-                    # Lấy w['inv_id'] để in ra
-                    print(f"{w['inv_id']:<8} | {w['batch_id']:<12} | {w['product_name'][:22] + '...' if len(w['product_name']) > 22 else w['product_name']:<25} | {str(w['exp_date']):<12} | {status:<15} | {w['quantity']}")
+                    print(f"{w['batch_id']:<12} | {w['product_name'][:22] + '...' if len(w['product_name']) > 22 else w['product_name']:<25} | {str(w['exp_date']):<12} | {status:<15} | {w['quantity']}")
             
             # Clear cache sau khi xem cảnh báo xong
             service.clear_batch_cache()
