@@ -17,6 +17,9 @@ class TransferTask:
     def __str__(self):
         return f"Task {self.task_id}: Transfer {self.quantity} of {self.product_id} from {self.source_batch_id} to {self.target_location_type} {self.target_location_id} ({self.status})"
 
+    def start(self):
+        self.status = "in_progress"
+
     def complete(self):
         self.status = "completed"
         self.completed_at = datetime.now()

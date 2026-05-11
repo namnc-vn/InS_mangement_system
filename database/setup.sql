@@ -50,3 +50,33 @@ CREATE TABLE batch (
     CONSTRAINT fk_batch_warehouse FOREIGN KEY (warehouse_id) REFERENCES warehouses(id),
     CONSTRAINT fk_batch_store FOREIGN KEY (store_id) REFERENCES stores(id)
 );
+
+CREATE TABLE transaction_history (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    operation_type VARCHAR(30) NOT NULL,
+    product_id VARCHAR(10) NOT NULL,
+    batch_id VARCHAR(20) NULL,
+    target_batch_id VARCHAR(20) NULL,
+    quantity INT NOT NULL,
+    unit_price FLOAT DEFAULT 0,
+    source_location_type VARCHAR(20) NULL,
+    source_location_id VARCHAR(10) NULL,
+    target_location_type VARCHAR(20) NULL,
+    target_location_id VARCHAR(10) NULL,
+    notes VARCHAR(255) NULL
+);
+
+CREATE TABLE transfer_tasks (
+    task_id VARCHAR(10) PRIMARY KEY,
+    product_id VARCHAR(10) NOT NULL,
+    source_batch_id VARCHAR(20) NOT NULL,
+    target_location_id VARCHAR(10) NOT NULL,
+    target_location_type VARCHAR(20) NOT NULL,
+    quantity INT NOT NULL,
+    priority VARCHAR(20) DEFAULT 'normal',
+    strategy VARCHAR(20) DEFAULT 'fefo',
+    status VARCHAR(20) DEFAULT 'pending',
+    created_at DATETIME NOT NULL,
+    completed_at DATETIME NULL
+);

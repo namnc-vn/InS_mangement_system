@@ -293,6 +293,114 @@ class Service:
         except Exception:
             pass
 
+        try:
+            self.load_tasks()
+        except Exception:
+            pass
+
+    def _get_next_id(self, item_dict, prefix):
+        max_num = 0
+        for item_id in item_dict.keys():
+            if item_id.startswith(prefix):
+                try:
+                    num = int(item_id[len(prefix):])
+                    if num > max_num: max_num = num
+                except ValueError:
+                    pass
+        return f"{prefix}{max_num + 1:02d}"
+
+    def load_tasks(self):
+        """Load persisted transfer tasks from the database."""
+        if self.cursor is None:
+            return
+        self.transfer_tasks.clear()
+        self.cursor.execute("SELECT task_id, product_id, source_batch_id, target_location_id, target_location_type, quantity, priority, strategy, status, created_at, completed_at FROM transfer_tasks ORDER BY created_at ASC")
+        max_id_number = 0
+        for row in self.cursor.fetchall():
+            task = self._parse_task_row(row)
+            self.transfer_tasks[task.task_id] = task
+            try:
+                num = int(task.task_id.lstrip('T'))
+                if num > max_id_number:
+                    max_id_number = num
+            except Exception:
+                pass
+        self.next_task_id = max_id_number + 1
+
+    def _parse_task_row(self, row):
+        task = TransferTask(row[0], row[1], row[2], row[3], row[4], row[5], row[6], row[7])
+        task.status = row[8]
+        task.created_at = row[9] if row[9] else datetime.now()
+        task.completed_at = row[10]
+        return task
+
+    def get_all_tasks(self):
+        return sorted(self.transfer_tasks.values(), key=lambda t: t.created_at)
+
+    def cancel_task(self, task_id):
+        if self.cursor is None or self.conn is None:
+            raise ValueError("Service has no database connection")
+        task = self.transfer_tasks.get(task_id)
+        if not task:
+            raise ValueError(f"Task {task_id} không tồn tại")
+        task.cancel()
+        self.cursor.execute("UPDATE transfer_tasks SET status=%s WHERE task_id=%s", (task.status, task.task_id))
+        self.conn.commit()
+        return task
+
+    def record_transaction_history(self, operation_type, product_id, quantity, unit_price=0,
+                                   batch_id=None, target_batch_id=None,
+                                   source_location_type=None, source_location_id=None,
+                                   target_location_type=None, target_location_id=None,
+                                   notes=None):
+        if self.cursor is None or self.conn is None:
+            return
+        self.cursor.execute(
+            "INSERT INTO transaction_history (operation_type, product_id, batch_id, target_batch_id, quantity, unit_price, source_location_type, source_location_id, target_location_type, target_location_id, notes) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (operation_type, product_id, batch_id, target_batch_id, quantity, unit_price,
+             source_location_type, source_location_id, target_location_type, target_location_id, notes)
+        )
+        self.conn.commit()
+
+    def get_transaction_history(self, start_date=None, end_date=None, product_id=None, warehouse_id=None):
+        if self.cursor is None:
+            return []
+        query = "SELECT id, created_at, operation_type, product_id, batch_id, target_batch_id, quantity, unit_price, source_location_type, source_location_id, target_location_type, target_location_id, notes FROM transaction_history WHERE 1=1"
+        params = []
+        if start_date:
+            query += " AND DATE(created_at) >= %s"
+            params.append(start_date)
+        if end_date:
+            query += " AND DATE(created_at) <= %s"
+            params.append(end_date)
+        if product_id:
+            query += " AND product_id = %s"
+            params.append(product_id)
+        if warehouse_id:
+            query += " AND ((source_location_type = 'warehouse' AND source_location_id = %s) OR (target_location_type = 'warehouse' AND target_location_id = %s))"
+            params.extend([warehouse_id, warehouse_id])
+        query += " ORDER BY created_at DESC"
+        self.cursor.execute(query, tuple(params))
+        records = []
+        for row in self.cursor.fetchall():
+            records.append({
+                "id": row[0],
+                "created_at": row[1],
+                "operation_type": row[2],
+                "product_id": row[3],
+                "batch_id": row[4],
+                "target_batch_id": row[5],
+                "quantity": row[6],
+                "unit_price": row[7],
+                "source_location_type": row[8],
+                "source_location_id": row[9],
+                "target_location_type": row[10],
+                "target_location_id": row[11],
+                "notes": row[12]
+            })
+        return records
+
     def _get_next_id(self, item_dict, prefix):
         max_num = 0
         for item_id in item_dict.keys():
@@ -519,7 +627,7 @@ class Service:
         self.batch_id_trie.insert(batch_id)
         return item
 
-    def add_batch_item(self, product_id, quantity, batch_id, mfg_date, exp_date, entry_date, warehouse_id, store_id=None, unit_price=0):
+    def add_batch_item(self, product_id, quantity, batch_id, mfg_date, exp_date, entry_date, warehouse_id, store_id=None, unit_price=0, record_history=True):
         if self.cursor is None or self.conn is None:
             raise ValueError("Service has no database connection")
         existing = self.check_batch_exist(product_id, batch_id, mfg_date, exp_date, warehouse_id, store_id)
@@ -533,7 +641,19 @@ class Service:
                 self.cursor.execute("UPDATE batch SET quantity = %s WHERE batch_id = %s",
                                     (existing.quantity, existing.batch_id))
             self.conn.commit()
-            # Cập nhật aggregate data
+            if record_history:
+                self.record_transaction_history(
+                    operation_type="inbound",
+                    product_id=product_id,
+                    quantity=int(quantity),
+                    unit_price=float(unit_price or existing.unit_price or 0),
+                    batch_id=existing.batch_id,
+                    source_location_type=None,
+                    source_location_id=None,
+                    target_location_type="warehouse" if warehouse_id else "store" if store_id else None,
+                    target_location_id=warehouse_id or store_id,
+                    notes="Restock existing batch"
+                )
             self.update_product_aggregates(product_id)
             return True, existing.batch_id
         else:
@@ -554,7 +674,19 @@ class Service:
             self.batch_composite_map[comp_key] = new_item
             self.qty_bst.insert(int(quantity), new_item)
             self.batch_id_trie.insert(insert_batch_id)
-            # Cập nhật aggregate data
+            if record_history:
+                self.record_transaction_history(
+                    operation_type="inbound",
+                    product_id=product_id,
+                    quantity=int(quantity),
+                    unit_price=float(unit_price or 0),
+                    batch_id=insert_batch_id,
+                    source_location_type=None,
+                    source_location_id=None,
+                    target_location_type="warehouse" if warehouse_id else "store" if store_id else None,
+                    target_location_id=warehouse_id or store_id,
+                    notes="New inbound batch"
+                )
             self.update_product_aggregates(product_id)
             return True, insert_batch_id
 
@@ -686,7 +818,20 @@ class Service:
         _, target_batch_id = self.add_batch_item(
             source_item.product_id, transfer_qty, source_item.batch_id,
             source_item.mfg_date, source_item.exp_date, entry_date,
-            warehouse_id, store_id=store_id, unit_price=source_item.unit_price
+            warehouse_id, store_id=store_id, unit_price=source_item.unit_price, record_history=False
+        )
+        self.record_transaction_history(
+            operation_type="transfer",
+            product_id=source_item.product_id,
+            quantity=transfer_qty,
+            unit_price=float(source_item.unit_price or 0),
+            batch_id=source_item.batch_id,
+            target_batch_id=target_batch_id,
+            source_location_type="warehouse" if source_warehouse_id else "store" if source_store_id else None,
+            source_location_id=source_warehouse_id or source_store_id,
+            target_location_type=target_location_type,
+            target_location_id=target_location_id,
+            notes=f"Transfer from {source_item.batch_id} to {target_batch_id}"
         )
         return True, target_batch_id
 
@@ -1155,7 +1300,12 @@ class Service:
             return []
         batches = []
         for item in items:
-            if location_type == "warehouse" and item.warehouse_id == location_id:
+            if location_id == "All":
+                if location_type == "warehouse" and item.warehouse_id:
+                    batches.append(item)
+                elif location_type == "store" and item.store_id:
+                    batches.append(item)
+            elif location_type == "warehouse" and item.warehouse_id == location_id:
                 batches.append(item)
             elif location_type == "store" and item.store_id == location_id:
                 batches.append(item)
@@ -1215,7 +1365,14 @@ class Service:
         task = TransferTask(task_id, product_id, selected_batch.batch_id, target_location_id,
                             target_location_type, quantity, priority, strategy)
         self.transfer_tasks[task_id] = task
-
+        if self.cursor and self.conn:
+            self.cursor.execute(
+                "INSERT INTO transfer_tasks (task_id, product_id, source_batch_id, target_location_id, target_location_type, quantity, priority, strategy, status, created_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (task.task_id, task.product_id, task.source_batch_id, task.target_location_id,
+                 task.target_location_type, task.quantity, task.priority, task.strategy, task.status, task.created_at)
+            )
+            self.conn.commit()
         return task
 
     def execute_transfer_task(self, task_id):
@@ -1229,15 +1386,27 @@ class Service:
             raise ValueError(f"Task {task_id} đã được xử lý với trạng thái: {task.status}, không thể execute")
         
         try:
+            task.start()
+            if self.cursor and self.conn:
+                self.cursor.execute("UPDATE transfer_tasks SET status=%s WHERE task_id=%s", (task.status, task.task_id))
+                self.conn.commit()
+
             success, new_batch_id = self.transfer_batch(task.source_batch_id, task.target_location_id, task.target_location_type, task.quantity)
             if success:
                 task.complete()
                 task.target_batch_id = new_batch_id
+                if self.cursor and self.conn:
+                    self.cursor.execute("UPDATE transfer_tasks SET status=%s, completed_at=%s WHERE task_id=%s",
+                                        (task.status, task.completed_at, task.task_id))
+                    self.conn.commit()
                 return True
             else:
                 raise ValueError(f"Transfer thất bại cho task {task_id}: {new_batch_id}")
         except Exception as e:
             task.status = "failed"
+            if self.cursor and self.conn:
+                self.cursor.execute("UPDATE transfer_tasks SET status=%s WHERE task_id=%s", (task.status, task.task_id))
+                self.conn.commit()
             raise e
 
     def get_pending_tasks(self):

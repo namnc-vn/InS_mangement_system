@@ -111,3 +111,60 @@ INSERT INTO batch VALUES
 ('B038', 'P017', '2026-05-03', '2026-05-12', '2026-05-04', 70, 38.0, NULL, 'S003'),
 ('B039', 'P020', '2026-03-10', '2026-12-10', '2026-03-12', 240, 20.0, 'W001', NULL),
 ('B040', 'P003', '2026-02-10', '2026-08-10', '2026-02-12', 320, 16.0, NULL, 'S004');
+
+-- =========================
+-- 5. Transaction History
+-- =========================
+INSERT INTO transaction_history (operation_type, product_id, batch_id, target_batch_id, quantity, unit_price, source_location_type, source_location_id, target_location_type, target_location_id, notes, created_at) VALUES
+-- Warehouse inbound - matching entry_date
+('inbound', 'P001', 'B001', NULL, 500, 9.5, NULL, NULL, 'warehouse', 'W001', 'Inbound batch B001', '2026-01-05 10:00:00'),
+('inbound', 'P002', 'B002', NULL, 450, 9.0, NULL, NULL, 'warehouse', 'W001', 'Inbound batch B002', '2026-01-12 10:00:00'),
+('inbound', 'P003', 'B003', NULL, 300, 16.0, NULL, NULL, 'warehouse', 'W002', 'Inbound batch B003', '2026-02-03 10:00:00'),
+('inbound', 'P004', 'B004', NULL, 250, 13.5, NULL, NULL, 'warehouse', 'W002', 'Inbound batch B004', '2026-03-05 10:00:00'),
+('inbound', 'P005', 'B005', NULL, 280, 11.0, NULL, NULL, 'warehouse', 'W003', 'Inbound batch B005', '2026-03-12 10:00:00'),
+('inbound', 'P006', 'B006', NULL, 200, 30.0, NULL, NULL, 'warehouse', 'W001', 'Inbound batch B006', '2026-04-02 10:00:00'),
+('inbound', 'P007', 'B007', NULL, 350, 7.5, NULL, NULL, 'warehouse', 'W001', 'Inbound batch B007', '2026-04-03 10:00:00'),
+('inbound', 'P008', 'B008', NULL, 180, 23.0, NULL, NULL, 'warehouse', 'W003', 'Inbound batch B008', '2026-02-18 10:00:00'),
+('inbound', 'P009', 'B009', NULL, 150, 52.0, NULL, NULL, 'warehouse', 'W002', 'Inbound batch B009', '2026-01-25 10:00:00'),
+('inbound', 'P010', 'B010', NULL, 120, 70.0, NULL, NULL, 'warehouse', 'W001', 'Inbound batch B010', '2026-01-10 10:00:00'),
+('inbound', 'P011', 'B011', NULL, 140, 26.0, NULL, NULL, 'warehouse', 'W001', 'Inbound batch B011', '2026-01-18 10:00:00'),
+('inbound', 'P012', 'B012', NULL, 160, 42.0, NULL, NULL, 'warehouse', 'W002', 'Inbound batch B012', '2026-02-05 10:00:00'),
+('inbound', 'P013', 'B013', NULL, 110, 115.0, NULL, NULL, 'warehouse', 'W003', 'Inbound batch B013', '2026-03-04 10:00:00'),
+('inbound', 'P014', 'B014', NULL, 1000, 6.0, NULL, NULL, 'warehouse', 'W001', 'Inbound batch B014', '2026-04-02 10:00:00'),
+('inbound', 'P015', 'B015', NULL, 950, 6.0, NULL, NULL, 'warehouse', 'W001', 'Inbound batch B015', '2026-04-02 10:00:00'),
+('inbound', 'P016', 'B016', NULL, 100, 13.0, NULL, NULL, 'warehouse', 'W002', 'Inbound batch B016', '2026-05-02 10:00:00'),
+('inbound', 'P017', 'B017', NULL, 90, 38.0, NULL, NULL, 'warehouse', 'W002', 'Inbound batch B017', '2026-05-03 10:00:00'),
+('inbound', 'P018', 'B018', NULL, 800, 6.5, NULL, NULL, 'warehouse', 'W003', 'Inbound batch B018', '2026-01-02 10:00:00'),
+('inbound', 'P019', 'B019', NULL, 400, 14.0, NULL, NULL, 'warehouse', 'W003', 'Inbound batch B019', '2026-02-05 10:00:00'),
+('inbound', 'P020', 'B020', NULL, 220, 20.0, NULL, NULL, 'warehouse', 'W001', 'Inbound batch B020', '2026-03-05 10:00:00'),
+('inbound', 'P006', 'B031', NULL, 180, 30.0, NULL, NULL, 'warehouse', 'W001', 'Inbound batch B031', '2026-04-06 10:00:00'),
+('inbound', 'P006', 'B032', NULL, 220, 30.0, NULL, NULL, 'warehouse', 'W001', 'Inbound batch B032', '2026-04-11 10:00:00'),
+('inbound', 'P014', 'B033', NULL, 900, 6.0, NULL, NULL, 'warehouse', 'W002', 'Inbound batch B033', '2026-04-03 10:00:00'),
+('inbound', 'P014', 'B034', NULL, 850, 6.0, NULL, NULL, 'warehouse', 'W003', 'Inbound batch B034', '2026-04-04 10:00:00'),
+('inbound', 'P001', 'B035', NULL, 600, 9.5, NULL, NULL, 'warehouse', 'W002', 'Inbound batch B035', '2026-01-18 10:00:00'),
+('inbound', 'P001', 'B036', NULL, 550, 9.5, NULL, NULL, 'warehouse', 'W003', 'Inbound batch B036', '2026-02-03 10:00:00'),
+('inbound', 'P020', 'B039', NULL, 240, 20.0, NULL, NULL, 'warehouse', 'W001', 'Inbound batch B039', '2026-03-12 10:00:00'),
+-- Store inbound - direct inbound to stores
+('inbound', 'P001', 'B021', NULL, 80, 10.0, NULL, NULL, 'store', 'S001', 'Inbound batch B021 to District 1 Store', '2026-04-01 10:00:00'),
+('inbound', 'P002', 'B022', NULL, 75, 10.5, NULL, NULL, 'store', 'S001', 'Inbound batch B022 to District 1 Store', '2026-04-01 10:00:00'),
+('inbound', 'P004', 'B023', NULL, 40, 15.5, NULL, NULL, 'store', 'S001', 'Inbound batch B023 to District 1 Store', '2026-04-02 10:00:00'),
+('inbound', 'P006', 'B024', NULL, 30, 33.0, NULL, NULL, 'store', 'S002', 'Inbound batch B024 to Thu Duc Store', '2026-04-10 10:00:00'),
+('inbound', 'P007', 'B025', NULL, 50, 8.5, NULL, NULL, 'store', 'S002', 'Inbound batch B025 to Thu Duc Store', '2026-04-11 10:00:00'),
+('inbound', 'P010', 'B026', NULL, 20, 78.0, NULL, NULL, 'store', 'S003', 'Inbound batch B026 to Binh Thanh Store', '2026-04-12 10:00:00'),
+('inbound', 'P011', 'B027', NULL, 25, 29.0, NULL, NULL, 'store', 'S003', 'Inbound batch B027 to Binh Thanh Store', '2026-04-12 10:00:00'),
+('inbound', 'P014', 'B028', NULL, 200, 7.0, NULL, NULL, 'store', 'S004', 'Inbound batch B028 to Go Vap Store', '2026-04-15 10:00:00'),
+('inbound', 'P015', 'B029', NULL, 180, 7.0, NULL, NULL, 'store', 'S004', 'Inbound batch B029 to Go Vap Store', '2026-04-15 10:00:00'),
+('inbound', 'P018', 'B030', NULL, 120, 6.5, NULL, NULL, 'store', 'S001', 'Inbound batch B030 to District 1 Store', '2026-04-18 10:00:00'),
+('inbound', 'P016', 'B037', NULL, 120, 13.0, NULL, NULL, 'store', 'S002', 'Inbound batch B037 to Thu Duc Store', '2026-05-03 10:00:00'),
+('inbound', 'P017', 'B038', NULL, 70, 38.0, NULL, NULL, 'store', 'S003', 'Inbound batch B038 to Binh Thanh Store', '2026-05-04 10:00:00'),
+('inbound', 'P003', 'B040', NULL, 320, 16.0, NULL, NULL, 'store', 'S004', 'Inbound batch B040 to Go Vap Store', '2026-02-12 10:00:00');
+
+
+-- =========================
+-- 6. Transfer Tasks
+-- =========================
+INSERT INTO transfer_tasks (task_id, product_id, source_batch_id, target_location_id, target_location_type, quantity, priority, strategy, status, created_at, completed_at) VALUES
+('T001', 'P001', 'B001', 'S001', 'store', 80, 'normal', 'fefo', 'completed', '2026-01-20 08:00:00', '2026-01-20 08:15:00'),
+('T002', 'P002', 'B002', 'S001', 'store', 75, 'normal', 'fefo', 'completed', '2026-01-27 09:00:00', '2026-01-27 09:10:00'),
+('T003', 'P006', 'B006', 'S002', 'store', 30, 'normal', 'fefo', 'completed', '2026-04-17 10:30:00', '2026-04-17 10:40:00'),
+('T004', 'P014', 'B014', 'S004', 'store', 200, 'normal', 'fefo', 'in_progress', '2026-04-22 14:00:00', NULL);
