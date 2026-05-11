@@ -124,4 +124,4 @@ Bạn có thể mở rộng dự án bằng cách:
 
 ---
 
-Nếu cần hướng dẫn cụ thể hơn hoặc muốn mở rộng tính năng nào, cứ nói tôi sẽ hỗ trợ tiếp.
+Nếu bạn muốn mở rộng hoặc thêm tính năng nào, cứ đóng góp, tôi sẽ tiến hành bổ sung.
