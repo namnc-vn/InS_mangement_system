@@ -1,4 +1,7 @@
+"""Product domain model used throughout the InS warehouse system."""
+
 class Product:
+    """Represents a product item with pricing and inventory alert flags."""
     def __init__(self, id, name, category_id, price, status="Available", total_quantity=0, has_expiring=False, has_low_stock=False):
         self.id = id
         self.name = name

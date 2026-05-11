@@ -1,6 +1,9 @@
+"""Transfer task model used for warehouse/store movement workflows."""
+
 from datetime import datetime
 
 class TransferTask:
+    """Represents an asynchronous transfer task in the inventory workflow."""
     def __init__(self, task_id, product_id, source_batch_id, target_location_id, target_location_type="store", quantity=0, priority="normal", strategy="fefo"):
         self.task_id = task_id
         self.product_id = product_id

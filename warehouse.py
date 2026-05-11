@@ -1,4 +1,7 @@
+"""Warehouse domain model used by the InS management system."""
+
 class Warehouse:
+    """Represents a warehouse location and its available space."""
     def __init__(self, id, name, space):
         self.id = id
         self.name = name

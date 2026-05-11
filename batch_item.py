@@ -1,7 +1,10 @@
+"""Batch item model representing inventory lots in warehouses or stores."""
+
 import random
 from datetime import datetime
 
 class BatchItem:
+    """Represents a single inventory batch with metadata and location."""
     def __init__(self, batch_id, product_id, mfg_date, exp_date, entry_date, quantity, unit_price=0, warehouse_id=None, store_id=None):
         self.batch_id = batch_id
         self.product_id = product_id

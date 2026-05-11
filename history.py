@@ -1,9 +1,12 @@
+"""Command pattern implementation for undo/redo in the InS warehouse app."""
+
 from collections import deque
 
 # ==========================================
 # COMMAND PATTERN — Base class
 # ==========================================
 class Command:
+    """Base command interface used by undo/redo command history."""
     def undo(self, service): pass
     def redo(self, service): pass
     def description(self): return "Unknown"

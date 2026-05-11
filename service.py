@@ -1,3 +1,5 @@
+"""Service layer implementing inventory, product, category, warehouse, store, and transfer task operations."""
+
 import heapq
 from datetime import datetime, date
 from collections import deque
@@ -184,6 +186,7 @@ class BatchBST:
 # 5. SERVICE — Lớp nghiệp vụ chính
 # ==========================================
 class Service:
+    """Core business service handling inventory operations, reports, and transfer tasks."""
     def __init__(self, conn=None):
         # --- Database connection ---
         self.conn = conn
@@ -254,7 +257,7 @@ class Service:
             SELECT p.*, 
                    COALESCE(SUM(i.quantity), 0) as total_quantity,
                    CASE WHEN MIN(DATEDIFF(i.exp_date, CURDATE())) <= %s THEN 1 ELSE 0 END as has_expiring,
-                   CASE WHEN COALESCE(SUM(i.quantity), 0) <= %s THEN 1 ELSE 0 END as has_low_stock
+                   CASE WHEN COALESCE(SUM(i.quantity), 0) < %s THEN 1 ELSE 0 END as has_low_stock
             FROM products p
             LEFT JOIN batch i ON p.id = i.product_id
             GROUP BY p.id
@@ -534,7 +537,7 @@ class Service:
             SELECT 
                 COALESCE(SUM(quantity), 0) as total_quantity,
                 CASE WHEN MIN(DATEDIFF(exp_date, CURDATE())) <= %s THEN 1 ELSE 0 END as has_expiring,
-                CASE WHEN COALESCE(SUM(quantity), 0) <= %s THEN 1 ELSE 0 END as has_low_stock
+                CASE WHEN COALESCE(SUM(quantity), 0) < %s THEN 1 ELSE 0 END as has_low_stock
             FROM batch 
             WHERE product_id = %s
         """, (self.settings["expiring_days_threshold"], self.settings["low_stock_threshold"], product_id))
@@ -896,10 +899,10 @@ class Service:
 
         # Load batch cho các sản phẩm có low stock
         for prod_id, total_qty in self.low_stock_summary.items():
-            if total_qty <= threshold:
+            if total_qty < threshold:
                 items = self.load_product_batch(prod_id)
                 for inv in items:
-                    if inv.quantity <= threshold:
+                    if inv.quantity < threshold:
                         heapq.heappush(min_heap, (inv.quantity, inv.batch_id, inv))
 
         return [heapq.heappop(min_heap)[2] for _ in range(len(min_heap))]

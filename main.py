@@ -1,7 +1,11 @@
+"""CLI entry point for the InS warehouse management system."""
+
 import db_connect
 from service import Service
 
 class Menu:
+    """Console menu definitions for the warehouse and product management CLI."""
+
     @staticmethod
     def show_main_menu():
         print("\n" + "="*35)
@@ -28,6 +32,7 @@ class Menu:
         print("c. Quay lại menu chính")
 
 def main():
+    """Khởi động ứng dụng ở chế độ console và điều khiển luồng chính."""
     # 1. Khởi tạo kết nối DB và Service
     try:
         conn = db_connect.get_connection()

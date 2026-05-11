@@ -1,4 +1,7 @@
+"""Category domain model for the InS warehouse system."""
+
 class Category:
+    """A product category with an aggregate quantity tracker."""
     def __init__(self, id, name):
         self.id = id
         self.name = name

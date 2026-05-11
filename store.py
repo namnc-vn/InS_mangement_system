@@ -1,4 +1,7 @@
+"""Store domain model for the business management system."""
+
 class Store:
+    """Represents a retail store location and its address."""
     def __init__(self, id, name, location):
         self.id = id
         self.name = name

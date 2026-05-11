@@ -1,3 +1,5 @@
+"""Graphical user interface for the InS warehouse and store management application."""
+
 import customtkinter as ctk
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -17,6 +19,7 @@ TEXT_SUB = "#6b7280"
 PRIMARY_COLOR = "#3b82f6"
 
 class App(ctk.CTk):
+    """Main GUI application window for warehouse management."""
     def __init__(self):
         super().__init__()
         self.title("Batch and Store management")
@@ -287,15 +290,15 @@ class App(ctk.CTk):
                 old_batch_id   = existing.batch_id if existing else None
 
                 entry_date = mfg  # Assume entry_date = mfg_date
-                self.service.add_batch_item(p_id, qty, b_id, mfg, exp, entry_date, wh, unit_price=unit_price)
+                success, actual_batch_id = self.service.add_batch_item(p_id, qty, b_id, mfg, exp, entry_date, wh, unit_price=unit_price)
 
                 # Tạo và đẩy Command vào history
                 if old_qty is not None:
                     cmd = UpdateBatchQtyCommand(old_batch_id, old_qty, qty)
                 else:
-                    comp_key = (p_id, b_id, mfg, exp, wh)
-                    new_item = self.service.batch_composite_map.get(comp_key)
-                    cmd = AddBatchCommand(new_item.batch_id, p_id, mfg, exp, entry_date, qty, unit_price, wh)
+                    new_item = self.service.batch_map.get(actual_batch_id)
+                    new_batch_id = new_item.batch_id if new_item else actual_batch_id
+                    cmd = AddBatchCommand(new_batch_id, p_id, mfg, exp, entry_date, qty, unit_price, wh)
                 self.history.push(cmd)
                 self._update_undo_redo_buttons()
 
@@ -361,7 +364,7 @@ class App(ctk.CTk):
         dialog.geometry("400x400")
         dialog.attributes("-topmost", True)
         
-        ctk.CTkLabel(dialog, text="Ngưỡng Số lượng thấp (Low Stock):", font=("Inter", 12, "bold")).pack(pady=(20, 5), padx=20, anchor="w")
+        ctk.CTkLabel(dialog, text="Ngưỡng Báo Thấp (Báo cảnh báo khi tồn kho > số này):", font=("Inter", 12, "bold")).pack(pady=(20, 5), padx=20, anchor="w")
         low_entry = ctk.CTkEntry(dialog, width=360)
         low_entry.insert(0, str(self.service.settings["low_stock_threshold"]))
         low_entry.pack(padx=20)
@@ -380,6 +383,7 @@ class App(ctk.CTk):
             self.service.settings["low_stock_threshold"] = int(low_entry.get())
             self.service.settings["expiring_days_threshold"] = int(exp_entry.get())
             self.service.settings["aging_days_threshold"] = int(aging_entry.get())
+            self.service.load_data()  # Reload data with new thresholds to recalculate aggregate flags
             self.build_kpi_cards()
             self.refresh_table()
             dialog.destroy()
@@ -543,7 +547,7 @@ class App(ctk.CTk):
             if recently_viewed:
                 for product in recently_viewed:
                     if product:
-                        recent_tree.insert("", "end", values=(product.id, product.name, product.category_id or "N/A", f"${product.price:.2f}" if product.price else "N/A", product.status or "Active"))
+                        recent_tree.insert("", "end", values=(product.id, product.name, product.category_id or "N/A", f"${float(product.price):.2f}" if product.price else "N/A", product.status or "Active"))
             else:
                 recent_tree.insert("", "end", values=("-", "Chưa có sản phẩm", "-", "-", "-"))
 
@@ -566,7 +570,7 @@ class App(ctk.CTk):
         value_total = self.service.get_inventory_value()
         report_summary = [
             {"title": "Tổng tồn kho", "value": f"{sum(item['total_qty'] for item in self.service.get_current_inventory_report())}", "color": "#2563eb"},
-            {"title": "Giá trị kho", "value": f"${value_total:,.2f}", "color": "#0f766e"},
+            {"title": "Giá trị kho", "value": f"${float(value_total):,.2f}", "color": "#0f766e"},
             {"title": "Sản phẩm nhiều hàng tại store", "value": f"{len(self.service.get_products_with_highest_store_inventory(10))}", "color": "#c026d3"},
             {"title": "Hàng tồn lâu", "value": f"{len(self.service.get_aging_inventory(min_days=self.service.settings['aging_days_threshold'], limit=100))}", "color": "#b91c1c"}
         ]
@@ -597,7 +601,7 @@ class App(ctk.CTk):
 
         inventory = self.service.get_current_inventory_report()
         for item in inventory[:20]:
-            inv_tree.insert("", "end", values=(item["name"], item["total_qty"], f'${item["total_value"]:.2f}', item["warehouse_qty"], item["store_qty"]))
+            inv_tree.insert("", "end", values=(item["name"], item["total_qty"], f'${float(item["total_value"]):.2f}', item["warehouse_qty"], item["store_qty"]))
 
         # Best selling products in stores
         best_frame = ctk.CTkFrame(content_frame, fg_color=BG_CARD, corner_radius=14, border_width=1, border_color="#e5e7eb")
@@ -1192,7 +1196,7 @@ class App(ctk.CTk):
         except IndexError: pass
 
     def _format_batch_status(self, inv, low_stock_threshold):
-        status = "Low Stock" if inv.quantity <= low_stock_threshold else "In Stock"
+        status = "Low Stock" if inv.quantity < low_stock_threshold else "In Stock"
         exp_date = inv.exp_date
         days_left = None
         if isinstance(exp_date, str):
@@ -1488,7 +1492,7 @@ class App(ctk.CTk):
             # Display filtered data
             for p in data:
                 checkbox = "✓" if str(p.id) in self.selected_products else "☐"
-                price = f"${p.price:.2f}" if p.price else "N/A"
+                price = f"${float(p.price):.2f}" if p.price else "N/A"
                 status = getattr(p, 'status', 'Active') or 'Active'
                 self.tree.insert("", "end", values=(checkbox, p.id, p.name, p.category_id, price, status))
                 
